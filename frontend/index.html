@@ -2,12 +2,24 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Browser tab icon -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Required for responsive layout on phones/tablets -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <!-- Faster font loading from Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- UI uses Inter; the Markdown editor uses JetBrains Mono (see MarkdownEditor.jsx) -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Lato:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <title>DocsBuilder</title>
   </head>
   <body>
+    <!-- React mounts here; everything inside #root is controlled by src/main.jsx -->
     <div id="root"></div>
+    <!-- Vite bundles src/main.jsx and pulls in App.jsx -->
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
