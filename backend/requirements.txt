@@ -6,4 +6,9 @@ myst-parser
 myst-nb
 ipykernel
 sphinx-book-theme
+pydata-sphinx-theme
+sphinx-rtd-theme
+sphinxcontrib-jquery>=4,<5
+shibuya
+pygments-styles>=0.3
 sphinx-design
