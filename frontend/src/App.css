@@ -1,27 +1,47 @@
 /*
- * DocsBuilder — Overleaf-style dark chrome + light preview “paper”.
+ * DocsBuilder — shared Overleaf-style palette (projects dashboard + editor + wizard).
  */
 
 :root {
-  --shell-bg: #1a1a1a;
-  --chrome-bg: #2c2c2c;
-  --chrome-border: #404040;
-  --chrome-muted: #a8a8a8;
-  --chrome-text: #ececec;
+  --ol-sidebar-bg: #1a1f2b;
+  --ol-main-bg: #222b3c;
+  --ol-panel-bg: #252d3e;
+  --ol-elevated: #2e3749;
+  --ol-green: #28b967;
+  --ol-green-hover: #34cf7a;
+  --ol-row-hover: rgba(255, 255, 255, 0.04);
+  --ol-border: rgba(255, 255, 255, 0.07);
+  --ol-text: #e9eef5;
+  --ol-muted: #8e97ab;
+  --ol-link: #7ecfff;
 
-  --accent: #4a9e6f;
-  --accent-hover: #5bb880;
+  --accent: var(--ol-green);
+  --accent-hover: var(--ol-green-hover);
+  --accent-soft: rgba(40, 185, 103, 0.22);
+  --accent-strong: rgba(40, 185, 103, 0.32);
 
-  --editor-bg: #1e1e1e;
-  --editor-tab-inactive-bg: #1e1e1e;
+  --shell-bg: var(--ol-main-bg);
+  --chrome-bg: var(--ol-panel-bg);
+  --chrome-border: var(--ol-border);
+  --chrome-muted: var(--ol-muted);
+  --chrome-text: var(--ol-text);
+
+  --editor-bg: #1a2230;
+  --editor-tab-inactive-bg: #1f2838;
+
   --preview-surround: #f0f0f0;
   --preview-paper: #ffffff;
 
-  --divider-line: #3a3a3a;
+  --divider-line: rgba(255, 255, 255, 0.1);
 
-  --danger-bg: #3d2020;
+  --danger-bg: rgba(61, 32, 32, 0.55);
   --danger-border: #7f3d3d;
   --danger-text: #fecaca;
+}
+
+body {
+  background: var(--ol-main-bg);
+  color: var(--ol-text);
 }
 
 .visually-hidden {
@@ -114,7 +134,7 @@
   padding: 0.35rem 0;
   margin: 0;
   list-style: none;
-  background: #353535;
+  background: var(--ol-elevated);
   border: 1px solid var(--chrome-border);
   border-radius: 6px;
   box-shadow:
@@ -157,7 +177,7 @@
   font-weight: 800;
   font-size: 1.35rem;
   letter-spacing: 0.03em;
-  color: var(--chrome-text);
+  color: var(--accent);
 }
 
 .toolbar-sub {
@@ -174,7 +194,7 @@
   border-radius: 4px;
   border: 1px solid transparent;
   background: transparent;
-  color: rgba(236, 236, 236, 0.92);
+  color: var(--chrome-text);
   cursor: pointer;
 }
 
@@ -218,7 +238,7 @@
   margin: 0;
   border: none;
   border-right: 1px solid var(--chrome-border);
-  background: #252526;
+  background: var(--ol-sidebar-bg);
   color: var(--chrome-muted);
   font-size: 1.1rem;
   line-height: 1;
@@ -282,7 +302,7 @@
   align-items: center;
   gap: 6px;
   padding: 8px 0;
-  background: #252526;
+  background: var(--ol-sidebar-bg);
   border-right: 1px solid var(--chrome-border);
 }
 
@@ -306,7 +326,7 @@
 
 .activity-bar-btn.active {
   color: var(--accent-hover);
-  background: rgba(74, 158, 111, 0.22);
+  background: var(--accent-soft);
 }
 
 .left-panel {
@@ -369,7 +389,7 @@
     Consolas,
     monospace;
   font-size: 0.92em;
-  color: rgba(236, 236, 236, 0.88);
+  color: var(--chrome-text);
 }
 
 .sidebar-primary-btn {
@@ -480,7 +500,7 @@
   border: 1px solid var(--chrome-border);
   border-radius: 4px;
   background: var(--editor-bg);
-  color: #d4d4d4;
+  color: var(--chrome-text);
   font-family:
     ui-monospace,
     SFMono-Regular,
@@ -595,7 +615,7 @@
 }
 
 .file-open-btn.active {
-  background: rgba(74, 158, 111, 0.28);
+  background: var(--accent-strong);
   color: #fff;
 }
 
@@ -612,7 +632,7 @@
   min-width: 10rem;
   padding: 0.35rem 0;
   margin: 0;
-  background: #353535;
+  background: var(--ol-elevated);
   border: 1px solid var(--chrome-border);
   border-radius: 6px;
   box-shadow:
@@ -1062,21 +1082,23 @@
 }
 
 /* --- Projects list & wizard --- */
-.toolbar-projects-link {
-  align-self: center;
-  flex-shrink: 0;
-  margin-right: 0.25rem;
-  padding: 0.35rem 0.65rem;
-  font-size: 13px;
-  font-weight: 500;
+.toolbar-home-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.38rem 0.5rem;
+  min-width: 2.25rem;
   color: var(--chrome-muted);
   text-decoration: none;
-  border-radius: 6px;
 }
 
-.toolbar-projects-link:hover {
+.toolbar-home-btn:hover {
   color: var(--chrome-text);
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.toolbar-home-btn svg {
+  display: block;
 }
 
 .app-shell--loading {
@@ -1090,7 +1112,6 @@
   font-size: 15px;
 }
 
-.projects-screen,
 .wizard-screen {
   padding: 1.25rem 1.5rem;
   max-width: 640px;
@@ -1098,118 +1119,383 @@
   box-sizing: border-box;
 }
 
-.projects-header {
+/* --- Overleaf-style projects dashboard --- */
+.ol-dash-root {
+  height: 100%;
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1.25rem;
+  min-height: 0;
+  background: var(--ol-main-bg);
+  color: var(--ol-text);
 }
 
-.projects-title {
-  margin: 0;
-  font-size: 1.35rem;
-  font-weight: 600;
-}
-
-.projects-tagline {
-  margin: 0.25rem 0 0;
-  font-size: 13px;
-  color: var(--chrome-muted);
-}
-
-.projects-add-btn {
+.ol-dash-sidebar {
+  width: 230px;
   flex-shrink: 0;
-  padding: 0.45rem 1rem;
-  font-size: 13px;
-  font-weight: 600;
-  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 0.85rem;
+  background: var(--ol-sidebar-bg);
+  border-right: 1px solid var(--ol-border);
+  box-sizing: border-box;
+}
+
+.ol-dash-brand {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ol-green);
+  padding: 0.35rem 0.6rem 1rem;
+}
+
+.ol-dash-new-project {
+  margin: 0 0.35rem 1.25rem;
+  padding: 0.55rem 1rem;
   border: none;
-  border-radius: 8px;
-  background: var(--accent);
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--ol-green);
   color: #fff;
   cursor: pointer;
 }
 
-.projects-add-btn:hover {
-  background: var(--accent-hover);
+.ol-dash-new-project:hover {
+  background: var(--ol-green-hover);
 }
 
-.projects-muted {
-  color: var(--chrome-muted);
-  font-size: 14px;
-}
-
-.projects-empty {
-  color: var(--chrome-muted);
-  font-size: 14px;
-  margin: 0 0 1rem;
-}
-
-.projects-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.ol-dash-nav {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
 }
 
-.projects-row-wrap {
-  display: flex;
-  align-items: stretch;
-  gap: 8px;
+.ol-dash-nav-item {
+  text-align: left;
+  padding: 0.45rem 0.65rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ol-muted);
+  font-family: inherit;
+  font-size: 14px;
+  cursor: pointer;
 }
 
-.projects-row-main {
+.ol-dash-nav-item:hover {
+  color: var(--ol-text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ol-dash-nav-item--active {
+  color: var(--ol-text);
+  background: rgba(40, 185, 103, 0.22);
+}
+
+.ol-dash-tags-block {
+  margin-top: 1.75rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--ol-border);
+}
+
+.ol-dash-tags-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--ol-muted);
+  padding: 0 0.65rem 0.45rem;
+}
+
+.ol-dash-tag-new {
+  width: 100%;
+  text-align: left;
+  padding: 0.35rem 0.65rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ol-muted);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.ol-dash-sidebar-spacer {
+  flex: 1;
+  min-height: 1rem;
+}
+
+.ol-dash-main {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.65rem 0.85rem;
-  text-align: left;
-  border: 1px solid var(--chrome-border);
-  border-radius: 8px;
-  background: var(--chrome-bg);
-  color: var(--chrome-text);
+  flex-direction: column;
+  padding: 1.25rem 1.75rem 1.5rem;
+  box-sizing: border-box;
+}
+
+.ol-dash-main-header {
+  margin-bottom: 1rem;
+}
+
+.ol-dash-main-title {
+  margin: 0;
+  font-size: 1.65rem;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+}
+
+.ol-dash-banner {
+  padding: 0.55rem 0.85rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 13px;
+}
+
+.ol-dash-banner.error {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
+}
+
+.ol-dash-search-wrap {
+  position: relative;
+  margin-bottom: 0.85rem;
+}
+
+.ol-dash-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--ol-muted);
+  display: flex;
+  pointer-events: none;
+}
+
+.ol-dash-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.55rem 0.85rem 0.55rem 2.35rem;
+  border-radius: 6px;
+  border: 1px solid var(--ol-border);
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--ol-text);
   font-family: inherit;
   font-size: 14px;
+}
+
+.ol-dash-search-input::placeholder {
+  color: var(--ol-muted);
+}
+
+.ol-dash-search-input:focus {
+  outline: none;
+  border-color: rgba(40, 185, 103, 0.45);
+}
+
+.ol-dash-selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.45rem 0.65rem;
+  margin-bottom: 0.5rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+}
+
+.ol-dash-selection-delete {
+  padding: 0.25rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-family: inherit;
+  font-size: 12px;
   cursor: pointer;
 }
 
-.projects-row-main:hover {
-  border-color: rgba(74, 158, 111, 0.45);
+.ol-dash-table-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
-.projects-row-name {
+.ol-dash-muted {
+  color: var(--ol-muted);
+  font-size: 14px;
+}
+
+.ol-dash-loading,
+.ol-dash-empty {
+  padding: 1rem 0;
+  margin: 0;
+}
+
+.ol-dash-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.ol-dash-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--ol-main-bg);
+  box-shadow: 0 1px 0 var(--ol-border);
+}
+
+.ol-dash-table th {
+  text-align: left;
   font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: var(--ol-muted);
+  padding: 0.55rem 0.65rem;
   white-space: nowrap;
 }
 
-.projects-row-meta {
-  flex-shrink: 0;
-  font-size: 12px;
-  color: var(--chrome-muted);
+.ol-dash-th-check {
+  width: 44px;
 }
 
-.projects-delete-btn {
-  flex-shrink: 0;
-  padding: 0 0.75rem;
-  font-size: 12px;
-  font-family: inherit;
-  border: 1px solid var(--danger-border);
-  border-radius: 8px;
-  background: var(--danger-bg);
-  color: var(--danger-text);
+.ol-dash-th-title {
+  min-width: 12rem;
+}
+
+.ol-dash-th-owner {
+  width: 7rem;
+}
+
+.ol-dash-th-modified {
+  width: 14rem;
+}
+
+.ol-dash-th-actions {
+  width: 11rem;
+  text-align: right;
+}
+
+.ol-dash-sort-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
 }
 
-.projects-delete-btn:hover {
-  filter: brightness(1.08);
+.ol-dash-sort-trigger:hover {
+  color: var(--ol-text);
+}
+
+.ol-dash-sort-arrow {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.ol-dash-row {
+  cursor: pointer;
+  border-bottom: 1px solid var(--ol-border);
+}
+
+.ol-dash-row:hover {
+  background: var(--ol-row-hover);
+}
+
+.ol-dash-row td {
+  padding: 0.55rem 0.65rem;
+  vertical-align: middle;
+}
+
+.ol-dash-checkbox {
+  margin: 0;
+  accent-color: var(--ol-green);
+  cursor: pointer;
+}
+
+.ol-dash-title-link {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #7ecfff;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  max-width: 100%;
+}
+
+.ol-dash-title-link:hover {
+  text-decoration: underline;
+}
+
+.ol-dash-badge {
+  margin-left: 0.45rem;
+  padding: 0.12rem 0.35rem;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(255, 180, 72, 0.18);
+  color: #ffc978;
+}
+
+.ol-dash-td-owner,
+.ol-dash-td-modified {
+  color: var(--ol-muted);
+  font-size: 13px;
+}
+
+.ol-dash-by {
+  opacity: 0.85;
+}
+
+.ol-dash-td-actions {
+  text-align: right;
+}
+
+.ol-dash-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.ol-dash-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ol-muted);
+  cursor: pointer;
+}
+
+.ol-dash-action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ol-text);
+}
+
+.ol-dash-action--danger:hover:not(:disabled) {
+  color: var(--danger-text);
+  background: rgba(127, 61, 61, 0.25);
+}
+
+.ol-dash-action--disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.ol-dash-modal {
+  background: var(--ol-elevated) !important;
+  border-color: var(--ol-border) !important;
 }
 
 .projects-modal-overlay {

@@ -9,9 +9,11 @@ What this module does:
 Run with: python app.py  → listens on port 5000 (see bottom of file).
 """
 
+import io
 import json
 import os
 import re
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -19,7 +21,7 @@ import shutil
 import tempfile
 import uuid
 
-from flask import Flask, abort, jsonify, request, send_from_directory
+from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 import jupytext
 from sphinx.cmd.build import build_main
@@ -367,6 +369,21 @@ def _documents_file(proj: Path) -> Path:
     return proj / "documents.json"
 
 
+def _touch_project_meta(proj: Path) -> None:
+    """Update ``updated_at`` on ``meta.json`` after content changes."""
+    meta_fp = proj / "meta.json"
+    if not meta_fp.is_file():
+        return
+    try:
+        meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+    if not isinstance(meta, dict):
+        return
+    meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+    meta_fp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
 def _read_workspace_conf(proj: Path) -> str:
     conf = _workspace_conf_file(proj)
     if not conf.exists():
@@ -391,7 +408,12 @@ def _list_project_metas() -> list[dict]:
             continue
         if isinstance(meta, dict) and meta.get("id"):
             out.append(meta)
-    out.sort(key=lambda m: str(m.get("created_at") or ""))
+    out.sort(
+        key=lambda m: (
+            str(m.get("name") or "").lower(),
+            str(m.get("id") or ""),
+        ),
+    )
     return out
 
 
@@ -417,6 +439,7 @@ def _create_project_on_disk(name: str) -> uuid.UUID:
         "id": str(uid),
         "name": name,
         "created_at": now,
+        "updated_at": now,
         "wizard_completed": False,
     }
     (proj / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -550,6 +573,7 @@ def api_projects_list():
                     "id": m["id"],
                     "name": m["name"],
                     "created_at": m.get("created_at"),
+                    "updated_at": m.get("updated_at") or m.get("created_at"),
                     "wizard_completed": bool(m.get("wizard_completed", False)),
                 }
                 for m in metas
@@ -601,6 +625,71 @@ def api_project_patch(project_id: str):
     return jsonify(meta)
 
 
+@app.post("/api/projects/<project_id>/duplicate")
+def api_project_duplicate(project_id: str):
+    """Clone project directory with a new id and ``Copy of …`` name."""
+    src = _project_dir_or_abort(project_id)
+    src_meta = json.loads((src / "meta.json").read_text(encoding="utf-8"))
+    if not isinstance(src_meta, dict):
+        return jsonify({"error": "Invalid source project metadata."}), 500
+    base_name = src_meta.get("name") if isinstance(src_meta.get("name"), str) else "Untitled"
+    candidate = f"Copy of {base_name}"
+    suffix_i = 1
+    while _name_taken(candidate):
+        candidate = f"Copy of {base_name} ({suffix_i})"
+        suffix_i += 1
+
+    new_uid = uuid.uuid4()
+    dest = _project_path(new_uid)
+    shutil.copytree(src, dest)
+
+    now = datetime.now(timezone.utc).isoformat()
+    meta = json.loads((dest / "meta.json").read_text(encoding="utf-8"))
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["id"] = str(new_uid)
+    meta["name"] = candidate
+    meta["created_at"] = now
+    meta["updated_at"] = now
+    meta["wizard_completed"] = bool(meta.get("wizard_completed", False))
+    (dest / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    return jsonify(
+        {
+            "id": str(new_uid),
+            "name": candidate,
+            "wizard_completed": meta["wizard_completed"],
+            "created_at": now,
+            "updated_at": now,
+        },
+    ), 201
+
+
+@app.get("/api/projects/<project_id>/download")
+def api_project_download(project_id: str):
+    """ZIP entire project folder for backup."""
+    proj = _project_dir_or_abort(project_id)
+    meta_fp = proj / "meta.json"
+    meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+    raw_name = meta.get("name") if isinstance(meta.get("name"), str) else "project"
+    slug = re.sub(r"[^\w\s\-]", "", raw_name, flags=re.UNICODE).strip().replace(" ", "-")
+    slug = slug[:120] if slug else "project"
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(proj.rglob("*")):
+            if path.is_file():
+                arcname = path.relative_to(proj).as_posix()
+                zf.write(path, arcname)
+    buf.seek(0)
+    return send_file(
+        buf,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=f"{slug}.zip",
+    )
+
+
 @app.delete("/api/projects/<project_id>")
 def api_project_delete(project_id: str):
     proj = _project_dir_or_abort(project_id)
@@ -641,6 +730,7 @@ def api_project_documents_put(project_id: str):
         json.dumps({"documents": cleaned}, indent=2),
         encoding="utf-8",
     )
+    _touch_project_meta(proj)
     return jsonify({"ok": True, "documents": cleaned})
 
 
@@ -796,6 +886,7 @@ def workspace_conf_put(project_id: str):
     conf = _workspace_conf_file(proj)
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text(content, encoding="utf-8")
+    _touch_project_meta(proj)
     return jsonify({"ok": True})
 
 
@@ -823,6 +914,7 @@ def workspace_theme_put(project_id: str):
     text = _read_workspace_conf(proj)
     updated = _set_html_theme_in_conf(text, theme)
     _workspace_conf_file(proj).write_text(updated, encoding="utf-8")
+    _touch_project_meta(proj)
     return jsonify({"ok": True, "theme": theme, "content": updated})
 
 
@@ -851,6 +943,7 @@ def workspace_assets_upload(project_id: str):
     static_dir.mkdir(parents=True, exist_ok=True)
     dest = static_dir / safe
     file.save(dest)
+    _touch_project_meta(proj)
     return jsonify({"ok": True, "name": safe})
 
 
@@ -878,6 +971,7 @@ def workspace_assets_delete(project_id: str, name: str):
     if not dest.is_file():
         return jsonify({"error": "Not found."}), 404
     dest.unlink()
+    _touch_project_meta(proj)
     return jsonify({"ok": True})
 
 

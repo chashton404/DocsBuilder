@@ -11,7 +11,6 @@ import {
 } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { MarkdownEditor } from './MarkdownEditor'
-import './App.css'
 
 function uiStorageKey(projectId) {
   return `docsbuilder-ui-${projectId}`
@@ -1053,15 +1052,33 @@ export default function ProjectEditor() {
   return (
     <div className="app-shell">
       <header className="toolbar-nav">
-        <Link className="toolbar-projects-link" to="/projects">
-          ← Projects
-        </Link>
         <div className="toolbar-brand-stack">
           <div className="toolbar-brand">
             <span className="toolbar-title">DocsBuilder</span>
             <span className="toolbar-sub">Sphinx preview</span>
           </div>
           <div className="toolbar-under-title">
+            <Link
+              className="toolbar-btn toolbar-home-btn"
+              to="/projects"
+              aria-label="Projects (home)"
+              title="Projects"
+            >
+              <svg
+                width={20}
+                height={20}
+                viewBox="0 0 24 24"
+                aria-hidden
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                <polyline points="9 22 9 12 15 12 15 22" />
+              </svg>
+            </Link>
             <input
               ref={mdInputRef}
               type="file"

@@ -20,9 +20,9 @@ const markdownDarkHighlight = HighlightStyle.define([
   },
   { tag: [t.comment, t.blockComment, t.lineComment], color: '#6a9955' },
   { tag: [t.string, t.literal], color: '#ce9178' },
-  { tag: [t.link, t.url], color: '#5bb880', textDecoration: 'underline' },
-  { tag: t.emphasis, color: '#d4d4d4', fontStyle: 'italic' },
-  { tag: t.strong, color: '#d4d4d4', fontWeight: 'bold' },
+  { tag: [t.link, t.url], color: '#48d891', textDecoration: 'underline' },
+  { tag: t.emphasis, color: '#d4dbe8', fontStyle: 'italic' },
+  { tag: t.strong, color: '#d4dbe8', fontWeight: 'bold' },
   { tag: [t.monospace, t.meta], color: '#ce9178' },
 ])
 
@@ -63,7 +63,7 @@ const pythonDarkHighlight = HighlightStyle.define([
       t.definition(t.variableName),
       t.local(t.variableName),
     ],
-    color: '#d4d4d4',
+    color: '#d4dbe8',
   },
   {
     tag: [
@@ -77,6 +77,11 @@ const pythonDarkHighlight = HighlightStyle.define([
   { tag: [t.attributeName], color: '#92c5f7' },
 ])
 
+/** Matches App.css --editor-bg / sidebar-blue-gray chrome */
+const OL_EDITOR_SURFACE = '#1a2230'
+const OL_EDITOR_ACTIVE_LINE = '#243047'
+const OL_GUTTER_MUTED = '#8e97ab'
+
 const editorChrome = EditorView.theme({
   '.cm-editor': {
     height: '100%',
@@ -85,7 +90,7 @@ const editorChrome = EditorView.theme({
     fontSize: '13px',
     display: 'flex',
     flexDirection: 'column',
-    backgroundColor: '#1e1e1e',
+    backgroundColor: OL_EDITOR_SURFACE,
     outline: 'none',
   },
   '.cm-scroller': {
@@ -95,40 +100,40 @@ const editorChrome = EditorView.theme({
     fontFamily:
       "'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
     lineHeight: '1.55',
-    backgroundColor: '#1e1e1e',
+    backgroundColor: OL_EDITOR_SURFACE,
   },
   '.cm-content': {
-    caretColor: '#ffffff',
-    color: '#d4d4d4',
+    caretColor: '#e9eef5',
+    color: '#d4dbe8',
     padding: '12px 0 48px',
   },
   '.cm-line': {
-    color: '#d4d4d4',
+    color: '#d4dbe8',
   },
   '.cm-cursor': {
-    borderLeftColor: '#ffffff',
+    borderLeftColor: '#34cf7a',
     borderLeftWidth: '2px',
   },
   '.cm-dropcursor': {
-    borderLeftColor: '#ffffff',
+    borderLeftColor: '#34cf7a',
   },
   '.cm-fat-cursor': {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#34cf7a',
     opacity: '0.85',
   },
   '.cm-gutters': {
-    backgroundColor: '#1e1e1e',
-    color: '#858585',
-    borderRight: '1px solid #404040',
+    backgroundColor: OL_EDITOR_SURFACE,
+    color: OL_GUTTER_MUTED,
+    borderRight: '1px solid rgba(255, 255, 255, 0.08)',
     fontFamily:
       "'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
   },
   '.cm-activeLineGutter': {
-    backgroundColor: '#252526',
-    color: '#858585',
+    backgroundColor: OL_EDITOR_ACTIVE_LINE,
+    color: OL_GUTTER_MUTED,
   },
   '.cm-activeLine': {
-    backgroundColor: '#252526',
+    backgroundColor: OL_EDITOR_ACTIVE_LINE,
   },
 })
 
