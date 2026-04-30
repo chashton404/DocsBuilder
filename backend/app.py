@@ -2,15 +2,17 @@
 Flask backend for DocsBuilder.
 
 What this module does:
+  • Stores multiple projects under ``DOCSBUILDER_DATA_ROOT/projects/<uuid>/`` (``conf.py``, ``_static``, ``documents.json``, ``meta.json``).
   • Accepts Jupyter notebooks (.ipynb) and MyST/Markdown text from the React app.
-  • Builds Sphinx HTML previews (MyST parser + sphinx-book-theme) in temp dirs.
-  • Serves those HTML previews (and their CSS/JS assets) under /api/sphinx-preview/...
+  • Builds Sphinx HTML previews in ephemeral temp dirs and serves them under /api/sphinx-preview/...
 
 Run with: python app.py  → listens on port 5000 (see bottom of file).
 """
 
 import json
+import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import shutil
@@ -37,11 +39,14 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 SPHINX_PREVIEWS: dict[str, Path] = {}
 MAX_SPHINX_PREVIEWS = 10
 
-# Persistent workspace on disk (survives across previews): editable conf.py + _static assets.
-WORKSPACE_ROOT = Path(tempfile.mkdtemp(prefix="docsbuilder-workspace-"))
-WORKSPACE_STATIC = WORKSPACE_ROOT / "_static"
-WORKSPACE_CONF = WORKSPACE_ROOT / "conf.py"
-WORKSPACE_STATIC.mkdir(parents=True, exist_ok=True)
+# Persistent project data: ``DOCSBUILDER_DATA_ROOT`` (default: ``backend/data``).
+_DATA_ROOT_RAW = os.environ.get("DOCSBUILDER_DATA_ROOT")
+if _DATA_ROOT_RAW:
+    DATA_ROOT = Path(_DATA_ROOT_RAW).expanduser().resolve()
+else:
+    DATA_ROOT = (Path(__file__).resolve().parent / "data").resolve()
+
+PROJECTS_ROOT = DATA_ROOT / "projects"
 
 # HTML themes shipped for the Sphinx preview (`html_theme` in workspace conf.py).
 ALLOWED_HTML_THEMES: tuple[tuple[str, str], ...] = (
@@ -325,10 +330,101 @@ def _default_workspace_conf() -> str:
     return DEFAULT_WORKSPACE_CONF_PY
 
 
-def _read_workspace_conf() -> str:
-    if not WORKSPACE_CONF.exists():
-        WORKSPACE_CONF.write_text(_default_workspace_conf(), encoding="utf-8")
-    return WORKSPACE_CONF.read_text(encoding="utf-8")
+def _ensure_projects_root() -> None:
+    PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _parse_uuid(project_id: str) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(project_id)
+    except ValueError:
+        return None
+
+
+def _project_path(uid: uuid.UUID) -> Path:
+    return PROJECTS_ROOT / str(uid)
+
+
+def _project_dir_or_abort(project_id: str) -> Path:
+    uid = _parse_uuid(project_id)
+    if uid is None:
+        abort(404)
+    path = _project_path(uid)
+    if not path.is_dir():
+        abort(404)
+    return path
+
+
+def _workspace_conf_file(proj: Path) -> Path:
+    return proj / "conf.py"
+
+
+def _workspace_static_dir(proj: Path) -> Path:
+    return proj / "_static"
+
+
+def _documents_file(proj: Path) -> Path:
+    return proj / "documents.json"
+
+
+def _read_workspace_conf(proj: Path) -> str:
+    conf = _workspace_conf_file(proj)
+    if not conf.exists():
+        conf.write_text(_default_workspace_conf(), encoding="utf-8")
+    return conf.read_text(encoding="utf-8")
+
+
+def _list_project_metas() -> list[dict]:
+    _ensure_projects_root()
+    out: list[dict] = []
+    if not PROJECTS_ROOT.is_dir():
+        return out
+    for child in PROJECTS_ROOT.iterdir():
+        if not child.is_dir():
+            continue
+        meta_fp = child / "meta.json"
+        if not meta_fp.is_file():
+            continue
+        try:
+            meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(meta, dict) and meta.get("id"):
+            out.append(meta)
+    out.sort(key=lambda m: str(m.get("created_at") or ""))
+    return out
+
+
+def _name_taken(name: str, exclude_project_id: str | None = None) -> bool:
+    for meta in _list_project_metas():
+        if meta.get("name") == name:
+            pid = meta.get("id")
+            if exclude_project_id is not None and pid == exclude_project_id:
+                continue
+            return True
+    return False
+
+
+def _create_project_on_disk(name: str) -> uuid.UUID:
+    _ensure_projects_root()
+    uid = uuid.uuid4()
+    proj = _project_path(uid)
+    proj.mkdir(parents=False)
+    _workspace_static_dir(proj).mkdir(parents=True)
+    _workspace_conf_file(proj).write_text(_default_workspace_conf(), encoding="utf-8")
+    now = datetime.now(timezone.utc).isoformat()
+    meta = {
+        "id": str(uid),
+        "name": name,
+        "created_at": now,
+        "wizard_completed": False,
+    }
+    (proj / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    _documents_file(proj).write_text(
+        json.dumps({"documents": []}, indent=2),
+        encoding="utf-8",
+    )
+    return uid
 
 
 def _safe_asset_filename(raw: str) -> str | None:
@@ -347,13 +443,13 @@ def _safe_asset_filename(raw: str) -> str | None:
     return name
 
 
-def _copy_workspace_static_into(source_dir: Path) -> None:
-    """Ensure ``source/_static`` exists and copy workspace assets into it."""
+def _copy_workspace_static_into(source_dir: Path, workspace_static: Path) -> None:
+    """Ensure ``source/_static`` exists and copy project workspace assets into it."""
     dest = source_dir / "_static"
     dest.mkdir(parents=True, exist_ok=True)
-    if not WORKSPACE_STATIC.exists():
+    if not workspace_static.exists():
         return
-    for path in WORKSPACE_STATIC.iterdir():
+    for path in workspace_static.iterdir():
         target = dest / path.name
         if path.is_dir():
             shutil.copytree(path, target, dirs_exist_ok=True)
@@ -364,6 +460,7 @@ def _copy_workspace_static_into(source_dir: Path) -> None:
 def render_sphinx_preview(
     markdown_content: str,
     *,
+    project_dir: Path,
     execution_mode: str = "off",
 ) -> tuple[str, str]:
     """Writes conf.py + index.md, runs sphinx-build, registers preview dir.
@@ -381,7 +478,10 @@ def render_sphinx_preview(
     source_dir.mkdir(parents=True, exist_ok=True)
     build_dir.mkdir(parents=True, exist_ok=True)
 
-    conf_body = _ensure_active_html_theme_extension(_read_workspace_conf().rstrip())
+    ws_static = _workspace_static_dir(project_dir)
+    conf_body = _ensure_active_html_theme_extension(
+        _read_workspace_conf(project_dir).rstrip(),
+    )
     conf_py = (
         conf_body
         + "\n\n# nb_execution_mode / timeout - set by DocsBuilder Recompile menu\n"
@@ -389,7 +489,7 @@ def render_sphinx_preview(
         + "nb_execution_timeout = 120\n"
     )
     (source_dir / "conf.py").write_text(conf_py, encoding="utf-8")
-    _copy_workspace_static_into(source_dir)
+    _copy_workspace_static_into(source_dir, ws_static)
     (source_dir / "index.md").write_text(markdown_content, encoding="utf-8")
 
     exit_code = build_main(
@@ -436,13 +536,123 @@ def serve_sphinx_preview(preview_id: str, asset_path: str = "index.html"):
 
 
 # -----------------------------------------------------------------------------
+# API: projects (each project has its own ``conf.py``, ``_static``, documents)
+# -----------------------------------------------------------------------------
+
+
+@app.get("/api/projects")
+def api_projects_list():
+    metas = _list_project_metas()
+    return jsonify(
+        {
+            "projects": [
+                {
+                    "id": m["id"],
+                    "name": m["name"],
+                    "created_at": m.get("created_at"),
+                    "wizard_completed": bool(m.get("wizard_completed", False)),
+                }
+                for m in metas
+            ]
+        },
+    )
+
+
+@app.post("/api/projects")
+def api_projects_create():
+    payload = request.get_json(silent=True) or {}
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return jsonify({"error": 'Field "name" is required.'}), 400
+    name_stripped = name.strip()
+    if _name_taken(name_stripped):
+        return jsonify({"error": "A project with this name already exists."}), 409
+    uid = _create_project_on_disk(name_stripped)
+    return jsonify(
+        {
+            "id": str(uid),
+            "name": name_stripped,
+            "wizard_completed": False,
+        },
+    ), 201
+
+
+@app.get("/api/projects/<project_id>")
+def api_project_get(project_id: str):
+    proj = _project_dir_or_abort(project_id)
+    meta_fp = proj / "meta.json"
+    meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+    return jsonify(meta)
+
+
+@app.patch("/api/projects/<project_id>")
+def api_project_patch(project_id: str):
+    proj = _project_dir_or_abort(project_id)
+    payload = request.get_json(silent=True) or {}
+    meta_fp = proj / "meta.json"
+    meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+    if not isinstance(meta, dict):
+        meta = {}
+    if "wizard_completed" in payload:
+        wc = payload["wizard_completed"]
+        if isinstance(wc, bool):
+            meta["wizard_completed"] = wc
+    meta_fp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return jsonify(meta)
+
+
+@app.delete("/api/projects/<project_id>")
+def api_project_delete(project_id: str):
+    proj = _project_dir_or_abort(project_id)
+    shutil.rmtree(proj)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/projects/<project_id>/documents")
+def api_project_documents_get(project_id: str):
+    proj = _project_dir_or_abort(project_id)
+    dp = _documents_file(proj)
+    if not dp.exists():
+        dp.write_text(json.dumps({"documents": []}, indent=2), encoding="utf-8")
+    data = json.loads(dp.read_text(encoding="utf-8"))
+    docs = data.get("documents") if isinstance(data, dict) else []
+    if not isinstance(docs, list):
+        docs = []
+    return jsonify({"documents": docs})
+
+
+@app.put("/api/projects/<project_id>/documents")
+def api_project_documents_put(project_id: str):
+    proj = _project_dir_or_abort(project_id)
+    payload = request.get_json(silent=True) or {}
+    docs = payload.get("documents")
+    if docs is None or not isinstance(docs, list):
+        return jsonify({"error": 'Field "documents" must be an array.'}), 400
+    cleaned: list[dict[str, str]] = []
+    for item in docs:
+        if not isinstance(item, dict):
+            continue
+        did = item.get("id")
+        nm = item.get("name")
+        content = item.get("content")
+        if isinstance(did, str) and isinstance(nm, str) and isinstance(content, str):
+            cleaned.append({"id": did, "name": nm, "content": content})
+    _documents_file(proj).write_text(
+        json.dumps({"documents": cleaned}, indent=2),
+        encoding="utf-8",
+    )
+    return jsonify({"ok": True, "documents": cleaned})
+
+
+# -----------------------------------------------------------------------------
 # API: import notebook → plain Markdown for the left-hand editor
 # -----------------------------------------------------------------------------
 
 
-@app.post("/api/import-notebook")
-def import_notebook():
+@app.post("/api/projects/<project_id>/import-notebook")
+def import_notebook(project_id: str):
     """Parse .ipynb and return concatenated Markdown cells for the editor."""
+    _project_dir_or_abort(project_id)
     file = request.files.get("file")
     if file is None:
         return jsonify({"error": "No file uploaded."}), 400
@@ -455,12 +665,21 @@ def import_notebook():
 
     raw = file.read()
     try:
-        markdown_text = extract_markdown_from_ipynb_bytes(raw, include_code_as_fenced=include_code)
+        markdown_text = extract_markdown_from_ipynb_bytes(
+            raw,
+            include_code_as_fenced=include_code,
+        )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         return jsonify({"error": f"Could not read notebook: {exc}"}), 400
 
     suggested_name = f"{Path(original_name).stem}.md"
-    return jsonify({"markdown": markdown_text, "source_name": original_name, "suggested_filename": suggested_name})
+    return jsonify(
+        {
+            "markdown": markdown_text,
+            "source_name": original_name,
+            "suggested_filename": suggested_name,
+        },
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -468,13 +687,14 @@ def import_notebook():
 # -----------------------------------------------------------------------------
 
 
-@app.post("/api/preview")
-def preview_markdown():
+@app.post("/api/projects/<project_id>/preview")
+def preview_markdown(project_id: str):
     """Build Sphinx HTML from arbitrary Markdown (manual recompile)."""
+    proj = _project_dir_or_abort(project_id)
     payload = request.get_json(silent=True) or {}
     markdown_content = payload.get("markdown")
     if markdown_content is None or not isinstance(markdown_content, str):
-        return jsonify({"error": "Field \"markdown\" is required."}), 400
+        return jsonify({"error": 'Field "markdown" is required.'}), 400
 
     raw_mode = payload.get("execution_mode")
     execution_mode = (
@@ -486,6 +706,7 @@ def preview_markdown():
     try:
         preview_id, _sphinx_html = render_sphinx_preview(
             markdown_content,
+            project_dir=proj,
             execution_mode=execution_mode,
         )
     except RuntimeError:
@@ -496,7 +717,7 @@ def preview_markdown():
     return jsonify(
         {
             "sphinx_preview_url": f"/api/sphinx-preview/{preview_id}/index.html",
-        }
+        },
     )
 
 
@@ -507,8 +728,9 @@ def preview_markdown():
 # not just Markdown cells stitched together.
 
 
-@app.post("/api/convert")
-def convert_notebook():
+@app.post("/api/projects/<project_id>/convert")
+def convert_notebook(project_id: str):
+    proj = _project_dir_or_abort(project_id)
     file = request.files.get("file")
     if file is None:
         return jsonify({"error": "No file uploaded."}), 400
@@ -536,6 +758,7 @@ def convert_notebook():
             content = normalize_myst_nb_notebook_metadata(content)
             preview_id, sphinx_html = render_sphinx_preview(
                 content,
+                project_dir=proj,
                 execution_mode=exec_mode,
             )
         except Exception as exc:  # pragma: no cover
@@ -548,41 +771,46 @@ def convert_notebook():
             "filename": output_name,
             "sphinx_html": sphinx_html,
             "sphinx_preview_url": f"/api/sphinx-preview/{preview_id}/index.html",
-        }
+        },
     )
 
 
 # -----------------------------------------------------------------------------
-# API: workspace — conf.py + _static assets (copied into each Sphinx preview build)
+# API: project workspace — conf.py + _static assets (copied into Sphinx builds)
 # -----------------------------------------------------------------------------
 
 
-@app.get("/api/workspace/conf")
-def workspace_conf_get():
-    return jsonify({"content": _read_workspace_conf()})
+@app.get("/api/projects/<project_id>/workspace/conf")
+def workspace_conf_get(project_id: str):
+    proj = _project_dir_or_abort(project_id)
+    return jsonify({"content": _read_workspace_conf(proj)})
 
 
-@app.put("/api/workspace/conf")
-def workspace_conf_put():
+@app.put("/api/projects/<project_id>/workspace/conf")
+def workspace_conf_put(project_id: str):
+    proj = _project_dir_or_abort(project_id)
     payload = request.get_json(silent=True) or {}
     content = payload.get("content")
     if content is None or not isinstance(content, str):
         return jsonify({"error": 'Field "content" is required.'}), 400
-    WORKSPACE_CONF.parent.mkdir(parents=True, exist_ok=True)
-    WORKSPACE_CONF.write_text(content, encoding="utf-8")
+    conf = _workspace_conf_file(proj)
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text(content, encoding="utf-8")
     return jsonify({"ok": True})
 
 
-@app.get("/api/workspace/themes")
-def workspace_themes_get():
-    text = _read_workspace_conf()
+@app.get("/api/projects/<project_id>/workspace/themes")
+def workspace_themes_get(project_id: str):
+    proj = _project_dir_or_abort(project_id)
+    text = _read_workspace_conf(proj)
     current = _parse_html_theme_from_conf(text)
     themes = [{"id": tid, "label": label} for tid, label in ALLOWED_HTML_THEMES]
     return jsonify({"themes": themes, "current": current})
 
 
-@app.put("/api/workspace/theme")
-def workspace_theme_put():
+@app.put("/api/projects/<project_id>/workspace/theme")
+def workspace_theme_put(project_id: str):
+    proj = _project_dir_or_abort(project_id)
     payload = request.get_json(silent=True) or {}
     theme = payload.get("theme")
     if not isinstance(theme, str) or theme not in ALLOWED_HTML_THEME_IDS:
@@ -592,53 +820,61 @@ def workspace_theme_put():
                 "allowed": sorted(ALLOWED_HTML_THEME_IDS),
             },
         ), 400
-    text = _read_workspace_conf()
+    text = _read_workspace_conf(proj)
     updated = _set_html_theme_in_conf(text, theme)
-    WORKSPACE_CONF.write_text(updated, encoding="utf-8")
+    _workspace_conf_file(proj).write_text(updated, encoding="utf-8")
     return jsonify({"ok": True, "theme": theme, "content": updated})
 
 
-@app.get("/api/workspace/assets")
-def workspace_assets_list():
-    WORKSPACE_STATIC.mkdir(parents=True, exist_ok=True)
+@app.get("/api/projects/<project_id>/workspace/assets")
+def workspace_assets_list(project_id: str):
+    proj = _project_dir_or_abort(project_id)
+    static_dir = _workspace_static_dir(proj)
+    static_dir.mkdir(parents=True, exist_ok=True)
     files: list[dict[str, str | int]] = []
-    for p in sorted(WORKSPACE_STATIC.iterdir()):
+    for p in sorted(static_dir.iterdir()):
         if p.is_file():
             files.append({"name": p.name, "size": int(p.stat().st_size)})
     return jsonify({"files": files})
 
 
-@app.post("/api/workspace/assets")
-def workspace_assets_upload():
+@app.post("/api/projects/<project_id>/workspace/assets")
+def workspace_assets_upload(project_id: str):
+    proj = _project_dir_or_abort(project_id)
+    static_dir = _workspace_static_dir(proj)
     file = request.files.get("file")
     if file is None or not getattr(file, "filename", None):
         return jsonify({"error": "No file uploaded."}), 400
     safe = _safe_asset_filename(file.filename)
     if safe is None:
         return jsonify({"error": "Invalid filename."}), 400
-    WORKSPACE_STATIC.mkdir(parents=True, exist_ok=True)
-    dest = WORKSPACE_STATIC / safe
+    static_dir.mkdir(parents=True, exist_ok=True)
+    dest = static_dir / safe
     file.save(dest)
     return jsonify({"ok": True, "name": safe})
 
 
-@app.get("/api/workspace/assets/<path:name>")
-def workspace_assets_get(name: str):
+@app.get("/api/projects/<project_id>/workspace/assets/<path:name>")
+def workspace_assets_get(project_id: str, name: str):
+    proj = _project_dir_or_abort(project_id)
+    static_dir = _workspace_static_dir(proj)
     safe = _safe_asset_filename(name)
     if safe is None:
         abort(404)
-    path = WORKSPACE_STATIC / safe
+    path = static_dir / safe
     if not path.is_file():
         abort(404)
-    return send_from_directory(WORKSPACE_STATIC, safe)
+    return send_from_directory(static_dir, safe)
 
 
-@app.delete("/api/workspace/assets/<path:name>")
-def workspace_assets_delete(name: str):
+@app.delete("/api/projects/<project_id>/workspace/assets/<path:name>")
+def workspace_assets_delete(project_id: str, name: str):
+    proj = _project_dir_or_abort(project_id)
+    static_dir = _workspace_static_dir(proj)
     safe = _safe_asset_filename(name)
     if safe is None:
         return jsonify({"error": "Invalid filename."}), 400
-    dest = WORKSPACE_STATIC / safe
+    dest = static_dir / safe
     if not dest.is_file():
         return jsonify({"error": "Not found."}), 404
     dest.unlink()
