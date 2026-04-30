@@ -33,6 +33,12 @@ const SIDEBAR_DRAG_CLOSE_BELOW_PX = 72
 
 /** Synthetic editor tab for workspace Sphinx `conf.py` (not listed under Files). */
 const CONF_PY_DOC_ID = 'workspace-conf-py'
+/** Pip requirements for executed notebook/code cells (not listed under Files). */
+const NOTEBOOK_REQ_DOC_ID = 'workspace-notebook-req'
+
+function isSyntheticWorkspaceDoc(id) {
+  return id === CONF_PY_DOC_ID || id === NOTEBOOK_REQ_DOC_ID
+}
 
 function ActivityIconFiles() {
   return (
@@ -104,6 +110,7 @@ export default function ProjectEditor() {
   const [error, setError] = useState('')
 
   const confSaveTimerRef = useRef(null)
+  const notebookReqSaveTimerRef = useRef(null)
 
   const documentsRef = useRef(documents)
   useEffect(() => {
@@ -159,7 +166,7 @@ export default function ProjectEditor() {
       }
       const docIds = new Set(docsFromServer.map((d) => d.id))
       uiOpen = uiOpen.filter(
-        (id) => docIds.has(id) || id === CONF_PY_DOC_ID,
+        (id) => docIds.has(id) || isSyntheticWorkspaceDoc(id),
       )
       let mergedDocs = [...docsFromServer]
       if (uiOpen.includes(CONF_PY_DOC_ID)) {
@@ -182,19 +189,41 @@ export default function ProjectEditor() {
           uiOpen = uiOpen.filter((id) => id !== CONF_PY_DOC_ID)
         }
       }
-      const nonConfDocs = mergedDocs.filter((d) => d.id !== CONF_PY_DOC_ID)
-      if (nonConfDocs.length === 0) {
-        uiOpen = uiOpen.filter((id) => id !== CONF_PY_DOC_ID)
+      if (uiOpen.includes(NOTEBOOK_REQ_DOC_ID)) {
+        try {
+          const nr = await fetch(`${api}/notebook-requirements`)
+          const np = await nr.json()
+          if (nr.ok && typeof np.content === 'string') {
+            mergedDocs = [
+              ...mergedDocs.filter((d) => d.id !== NOTEBOOK_REQ_DOC_ID),
+              {
+                id: NOTEBOOK_REQ_DOC_ID,
+                name: 'requirements-notebook.txt',
+                content: np.content,
+              },
+            ]
+          } else {
+            uiOpen = uiOpen.filter((id) => id !== NOTEBOOK_REQ_DOC_ID)
+          }
+        } catch {
+          uiOpen = uiOpen.filter((id) => id !== NOTEBOOK_REQ_DOC_ID)
+        }
+      }
+      const nonSyntheticDocs = mergedDocs.filter(
+        (d) => !isSyntheticWorkspaceDoc(d.id),
+      )
+      if (nonSyntheticDocs.length === 0) {
+        uiOpen = uiOpen.filter((id) => !isSyntheticWorkspaceDoc(id))
         uiActive = uiOpen.length > 0 ? uiOpen[0] : ''
       } else if (uiOpen.length === 0) {
-        const first = mergedDocs.find((d) => d.id !== CONF_PY_DOC_ID)
+        const first = mergedDocs.find((d) => !isSyntheticWorkspaceDoc(d.id))
         if (first) {
           uiOpen = [first.id]
           uiActive = first.id
         }
       } else if (
         !uiActive
-        || (!docIds.has(uiActive) && uiActive !== CONF_PY_DOC_ID)
+        || (!docIds.has(uiActive) && !isSyntheticWorkspaceDoc(uiActive))
       ) {
         uiActive = uiOpen[0] ?? ''
       }
@@ -215,7 +244,7 @@ export default function ProjectEditor() {
     if (!hydrated || !projectId) {
       return undefined
     }
-    const persistable = documents.filter((d) => d.id !== CONF_PY_DOC_ID)
+    const persistable = documents.filter((d) => !isSyntheticWorkspaceDoc(d.id))
     const handle = window.setTimeout(() => {
       void fetch(`${api}/documents`, {
         method: 'PUT',
@@ -243,6 +272,8 @@ export default function ProjectEditor() {
   const [previewUrl, setPreviewUrl] = useState('')
   const [isImporting, setIsImporting] = useState(false)
   const [isCompiling, setIsCompiling] = useState(false)
+  /** During preview: `'packages'` (pip) then `'sphinx'`; unused when idle. */
+  const [previewPhase, setPreviewPhase] = useState(null)
 
   const [includeCodeAsFenced, setIncludeCodeAsFenced] = useState(false)
 
@@ -306,14 +337,14 @@ export default function ProjectEditor() {
 
   /** Sphinx preview always uses Markdown from a real doc, never `conf.py`. */
   const markdownPreviewDoc = useMemo(() => {
-    if (activeDoc && activeDoc.id !== CONF_PY_DOC_ID) {
+    if (activeDoc && !isSyntheticWorkspaceDoc(activeDoc.id)) {
       return activeDoc
     }
-    const fromTabs = openTabs.find((d) => d.id !== CONF_PY_DOC_ID)
+    const fromTabs = openTabs.find((d) => !isSyntheticWorkspaceDoc(d.id))
     if (fromTabs) {
       return fromTabs
     }
-    return documents.find((d) => d.id !== CONF_PY_DOC_ID) ?? null
+    return documents.find((d) => !isSyntheticWorkspaceDoc(d.id)) ?? null
   }, [activeDoc, openTabs, documents])
 
   const editorValue = activeDoc?.content ?? ''
@@ -338,6 +369,26 @@ export default function ProjectEditor() {
     }
   }, [api])
 
+  const flushPendingNotebookReqSave = useCallback(async () => {
+    if (notebookReqSaveTimerRef.current) {
+      clearTimeout(notebookReqSaveTimerRef.current)
+      notebookReqSaveTimerRef.current = null
+    }
+    const reqDoc = documentsRef.current.find((d) => d.id === NOTEBOOK_REQ_DOC_ID)
+    if (!reqDoc) {
+      return
+    }
+    const response = await fetch(`${api}/notebook-requirements`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: reqDoc.content }),
+    })
+    const payload = await response.json()
+    if (!response.ok) {
+      throw new Error(payload.error || 'Could not save notebook requirements.')
+    }
+  }, [api])
+
   const updateActiveContent = useCallback(
     (value) => {
       if (activeDocId === CONF_PY_DOC_ID) {
@@ -359,6 +410,25 @@ export default function ProjectEditor() {
         }, 750)
         return
       }
+      if (activeDocId === NOTEBOOK_REQ_DOC_ID) {
+        setDocuments((prev) =>
+          prev.map((d) =>
+            d.id === NOTEBOOK_REQ_DOC_ID ? { ...d, content: value } : d,
+          ),
+        )
+        if (notebookReqSaveTimerRef.current) {
+          clearTimeout(notebookReqSaveTimerRef.current)
+        }
+        notebookReqSaveTimerRef.current = setTimeout(() => {
+          notebookReqSaveTimerRef.current = null
+          void fetch(`${api}/notebook-requirements`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: value }),
+          }).catch(() => {})
+        }, 750)
+        return
+      }
       setDocuments((prev) =>
         prev.map((d) =>
           d.id === activeDocId ? { ...d, content: value } : d,
@@ -372,6 +442,9 @@ export default function ProjectEditor() {
     return () => {
       if (confSaveTimerRef.current) {
         clearTimeout(confSaveTimerRef.current)
+      }
+      if (notebookReqSaveTimerRef.current) {
+        clearTimeout(notebookReqSaveTimerRef.current)
       }
     }
   }, [])
@@ -406,6 +479,22 @@ export default function ProjectEditor() {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: confDoc.content }),
+          })
+        })
+      }
+    }
+    if (docId === NOTEBOOK_REQ_DOC_ID) {
+      if (notebookReqSaveTimerRef.current) {
+        clearTimeout(notebookReqSaveTimerRef.current)
+        notebookReqSaveTimerRef.current = null
+      }
+      const reqDoc = documentsRef.current.find((d) => d.id === NOTEBOOK_REQ_DOC_ID)
+      if (reqDoc) {
+        queueMicrotask(() => {
+          void fetch(`${api}/notebook-requirements`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: reqDoc.content }),
           })
         })
       }
@@ -497,6 +586,7 @@ export default function ProjectEditor() {
       setThemeError('')
       setError('')
       try {
+        await flushPendingNotebookReqSave()
         await flushPendingConfSave()
         const response = await fetch(`${api}/workspace/theme`, {
           method: 'PUT',
@@ -525,7 +615,7 @@ export default function ProjectEditor() {
         )
       }
     },
-    [flushPendingConfSave, api],
+    [flushPendingNotebookReqSave, flushPendingConfSave, api],
   )
 
   const openConfPyInEditor = useCallback(async () => {
@@ -548,6 +638,39 @@ export default function ProjectEditor() {
     } catch (err) {
       setError(
         err instanceof Error ? err.message : 'Could not load conf.py.',
+      )
+    }
+  }, [openTabForDoc, api])
+
+  const openNotebookRequirementsInEditor = useCallback(async () => {
+    setError('')
+    try {
+      const response = await fetch(`${api}/notebook-requirements`)
+      const payload = await response.json()
+      if (!response.ok) {
+        throw new Error(payload.error || 'Could not load notebook requirements.')
+      }
+      const content =
+        typeof payload.content === 'string' ? payload.content : ''
+      setDocuments((prev) => {
+        const without = prev.filter((d) => d.id !== NOTEBOOK_REQ_DOC_ID)
+        return [
+          ...without,
+          {
+            id: NOTEBOOK_REQ_DOC_ID,
+            name: 'requirements-notebook.txt',
+            content,
+          },
+        ]
+      })
+      queueMicrotask(() => {
+        openTabForDoc(NOTEBOOK_REQ_DOC_ID)
+      })
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Could not load notebook requirements.',
       )
     }
   }, [openTabForDoc, api])
@@ -865,9 +988,25 @@ export default function ProjectEditor() {
 
     setRecompileMenuOpen(false)
     setIsCompiling(true)
+    setPreviewPhase(executionMode === 'force' ? 'packages' : 'sphinx')
     setError('')
 
     try {
+      if (executionMode === 'force') {
+        const syncResponse = await fetch(`${api}/notebook-env/sync`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ execution_mode: 'force' }),
+        })
+        const syncPayload = await syncResponse.json()
+        if (!syncResponse.ok) {
+          throw new Error(
+            syncPayload.error || 'Notebook package install failed.',
+          )
+        }
+        setPreviewPhase('sphinx')
+      }
+
       const response = await fetch(`${api}/preview`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -888,12 +1027,27 @@ export default function ProjectEditor() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sphinx preview failed.')
     } finally {
+      setPreviewPhase(null)
       setIsCompiling(false)
     }
   }
 
   const onDownload = () => {
     if (!activeDoc) {
+      return
+    }
+    if (activeDoc.id === NOTEBOOK_REQ_DOC_ID) {
+      const blob = new Blob([activeDoc.content], {
+        type: 'text/plain;charset=utf-8',
+      })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = 'requirements-notebook.txt'
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      URL.revokeObjectURL(url)
       return
     }
     if (activeDoc.id === CONF_PY_DOC_ID) {
@@ -1239,7 +1393,7 @@ export default function ProjectEditor() {
                   <div className="sidebar-heading">Files</div>
                   <ul className="file-list">
                     {documents
-                      .filter((doc) => doc.id !== CONF_PY_DOC_ID)
+                      .filter((doc) => !isSyntheticWorkspaceDoc(doc.id))
                       .map((doc) => (
                       <li key={doc.id} className="file-row">
                         <button
@@ -1375,6 +1529,18 @@ export default function ProjectEditor() {
                 >
                   Edit conf.py
                 </button>
+                <p className="sidebar-panel-hint">
+                  For <strong>Recompile and rerun code cells</strong>, list pip
+                  packages in{' '}
+                  <strong>requirements-notebook.txt</strong> (project virtualenv).
+                </p>
+                <button
+                  type="button"
+                  className="sidebar-primary-btn"
+                  onClick={() => void openNotebookRequirementsInEditor()}
+                >
+                  Edit notebook packages
+                </button>
                 <div className="sidebar-heading theme-picker-heading">
                   HTML theme
                 </div>
@@ -1461,14 +1627,22 @@ export default function ProjectEditor() {
           >
             <section className="editor-pane">
               <div className="pane-label">
-                {activeDocId === CONF_PY_DOC_ID ? 'conf.py' : 'Editor'}
+                {activeDocId === CONF_PY_DOC_ID
+                  ? 'conf.py'
+                  : activeDocId === NOTEBOOK_REQ_DOC_ID
+                    ? 'requirements-notebook.txt'
+                    : 'Editor'}
               </div>
               <div className="editor-mount">
                 <MarkdownEditor
                   value={editorValue}
                   onChange={updateActiveContent}
                   language={
-                    activeDocId === CONF_PY_DOC_ID ? 'python' : 'markdown'
+                    activeDocId === CONF_PY_DOC_ID
+                      ? 'python'
+                      : activeDocId === NOTEBOOK_REQ_DOC_ID
+                        ? 'plaintext'
+                        : 'markdown'
                   }
                 />
               </div>
@@ -1555,7 +1729,11 @@ export default function ProjectEditor() {
                   {isCompiling ? (
                     <div className="preview-loading" aria-busy="true">
                       <span className="spinner" aria-hidden />
-                      <p>Running Sphinx…</p>
+                      <p>
+                        {previewPhase === 'packages'
+                          ? 'Installing notebook packages…'
+                          : 'Building Sphinx preview…'}
+                      </p>
                     </div>
                   ) : null}
                 </div>

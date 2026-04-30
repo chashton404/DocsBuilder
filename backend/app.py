@@ -9,12 +9,16 @@ What this module does:
 Run with: python app.py  → listens on port 5000 (see bottom of file).
 """
 
+import hashlib
 import io
 import json
 import os
 import re
+import subprocess
+import sys
 import zipfile
 from datetime import datetime, timezone
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import shutil
@@ -49,6 +53,10 @@ else:
     DATA_ROOT = (Path(__file__).resolve().parent / "data").resolve()
 
 PROJECTS_ROOT = DATA_ROOT / "projects"
+
+# Per-project notebook execution: pip requirements + venv (see README).
+NOTEBOOK_REQUIREMENTS_BASENAME = "requirements-notebook.txt"
+NOTEBOOK_VENV_DIRNAME = ".notebook-venv"
 
 # HTML themes shipped for the Sphinx preview (`html_theme` in workspace conf.py).
 ALLOWED_HTML_THEMES: tuple[tuple[str, str], ...] = (
@@ -369,6 +377,116 @@ def _documents_file(proj: Path) -> Path:
     return proj / "documents.json"
 
 
+def _notebook_requirements_path(proj: Path) -> Path:
+    return proj / NOTEBOOK_REQUIREMENTS_BASENAME
+
+
+def _notebook_venv_root(proj: Path) -> Path:
+    return proj / NOTEBOOK_VENV_DIRNAME
+
+
+def _notebook_venv_requirements_hash_path(proj: Path) -> Path:
+    return _notebook_venv_root(proj) / "requirements.sha256"
+
+
+def _ensure_notebook_requirements_file(proj: Path) -> Path:
+    path = _notebook_requirements_path(proj)
+    if not path.is_file():
+        path.write_text(
+            "# One package per line (pip requirement format).\n"
+            "# Example:\n"
+            "# h5py>=3.10\n",
+            encoding="utf-8",
+        )
+    return path
+
+
+def _venv_python_exe(venv_root: Path) -> Path:
+    if os.name == "nt":
+        return venv_root / "Scripts" / "python.exe"
+    return venv_root / "bin" / "python"
+
+
+def _requirements_notebook_fingerprint(proj: Path) -> str:
+    path = _notebook_requirements_path(proj)
+    if not path.is_file():
+        return hashlib.sha256(b"").hexdigest()
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _sync_project_notebook_env(proj: Path) -> dict[str, object]:
+    """Create/update per-project venv and pip-install ``requirements-notebook.txt``.
+
+    Uses ``venv --system-site-packages`` so Sphinx/MyST-NB stack from the main
+    interpreter stays visible; extra imports resolve from the project venv.
+    """
+    t0 = time.perf_counter()
+    req_path = _ensure_notebook_requirements_file(proj)
+    venv_root = _notebook_venv_root(proj)
+    fingerprint = _requirements_notebook_fingerprint(proj)
+    hash_path = _notebook_venv_requirements_hash_path(proj)
+
+    if (
+        venv_root.is_dir()
+        and hash_path.is_file()
+        and hash_path.read_text(encoding="utf-8").strip() == fingerprint
+    ):
+        return {
+            "ran_pip": False,
+            "skipped": False,
+            "duration_ms": int((time.perf_counter() - t0) * 1000),
+        }
+
+    if not venv_root.is_dir():
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "venv",
+                "--system-site-packages",
+                str(venv_root),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if proc.returncode != 0:
+            msg = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(msg or "Could not create notebook virtualenv.")
+
+    py = _venv_python_exe(venv_root)
+    if not py.is_file():
+        raise RuntimeError("Notebook virtualenv is missing Python.")
+
+    stripped = req_path.read_text(encoding="utf-8").strip()
+    if stripped:
+        proc = subprocess.run(
+            [
+                str(py),
+                "-m",
+                "pip",
+                "install",
+                "-r",
+                str(req_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if proc.returncode != 0:
+            msg = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(msg or "pip install failed.")
+
+    hash_path.parent.mkdir(parents=True, exist_ok=True)
+    hash_path.write_text(fingerprint + "\n", encoding="utf-8")
+
+    return {
+        "ran_pip": bool(stripped),
+        "skipped": False,
+        "duration_ms": int((time.perf_counter() - t0) * 1000),
+    }
+
+
 def _touch_project_meta(proj: Path) -> None:
     """Update ``updated_at`` on ``meta.json`` after content changes."""
     meta_fp = proj / "meta.json"
@@ -447,6 +565,7 @@ def _create_project_on_disk(name: str) -> uuid.UUID:
         json.dumps({"documents": []}, indent=2),
         encoding="utf-8",
     )
+    _ensure_notebook_requirements_file(proj)
     return uid
 
 
@@ -515,18 +634,44 @@ def render_sphinx_preview(
     _copy_workspace_static_into(source_dir, ws_static)
     (source_dir / "index.md").write_text(markdown_content, encoding="utf-8")
 
-    exit_code = build_main(
-        [
-            "-b",
-            "html",
-            "-q",
-            str(source_dir),
-            str(build_dir),
-        ]
-    )
-    if exit_code != 0:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise RuntimeError("Sphinx build failed.")
+    notebook_python: str | None = None
+    if mode == "force":
+        _sync_project_notebook_env(project_dir)
+        notebook_python = str(_venv_python_exe(_notebook_venv_root(project_dir)))
+
+    if notebook_python:
+        proc = subprocess.run(
+            [
+                notebook_python,
+                "-m",
+                "sphinx.cmd.build",
+                "-b",
+                "html",
+                "-q",
+                str(source_dir),
+                str(build_dir),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if proc.returncode != 0:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(detail or "Sphinx build failed.")
+    else:
+        exit_code = build_main(
+            [
+                "-b",
+                "html",
+                "-q",
+                str(source_dir),
+                str(build_dir),
+            ]
+        )
+        if exit_code != 0:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise RuntimeError("Sphinx build failed.")
 
     index_html = (build_dir / "index.html").read_text(encoding="utf-8")
     preview_id = uuid.uuid4().hex
@@ -641,7 +786,7 @@ def api_project_duplicate(project_id: str):
 
     new_uid = uuid.uuid4()
     dest = _project_path(new_uid)
-    shutil.copytree(src, dest)
+    shutil.copytree(src, dest, ignore=shutil.ignore_patterns(NOTEBOOK_VENV_DIRNAME))
 
     now = datetime.now(timezone.utc).isoformat()
     meta = json.loads((dest / "meta.json").read_text(encoding="utf-8"))
@@ -773,6 +918,53 @@ def import_notebook(project_id: str):
 
 
 # -----------------------------------------------------------------------------
+# API: per-project notebook packages (venv + pip)
+# -----------------------------------------------------------------------------
+
+
+@app.post("/api/projects/<project_id>/notebook-env/sync")
+def notebook_env_sync(project_id: str):
+    """Ensure notebook venv matches ``requirements-notebook.txt`` (pip when needed)."""
+    proj = _project_dir_or_abort(project_id)
+    payload = request.get_json(silent=True) or {}
+    raw = payload.get("execution_mode")
+    execution_mode = (
+        raw if isinstance(raw, str) and raw in {"off", "force"} else "off"
+    )
+    if execution_mode == "off":
+        return jsonify({"skipped": True, "ran_pip": False})
+
+    try:
+        info = _sync_project_notebook_env(proj)
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify(info)
+
+
+@app.get("/api/projects/<project_id>/notebook-requirements")
+def notebook_requirements_get(project_id: str):
+    proj = _project_dir_or_abort(project_id)
+    path = _ensure_notebook_requirements_file(proj)
+    return jsonify({"content": path.read_text(encoding="utf-8")})
+
+
+@app.put("/api/projects/<project_id>/notebook-requirements")
+def notebook_requirements_put(project_id: str):
+    proj = _project_dir_or_abort(project_id)
+    payload = request.get_json(silent=True) or {}
+    content = payload.get("content")
+    if content is None or not isinstance(content, str):
+        return jsonify({"error": 'Field "content" is required.'}), 400
+    path = _notebook_requirements_path(proj)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    _notebook_venv_requirements_hash_path(proj).unlink(missing_ok=True)
+    _touch_project_meta(proj)
+    return jsonify({"ok": True})
+
+
+# -----------------------------------------------------------------------------
 # API: on-demand Sphinx preview from whatever is currently in the editor
 # -----------------------------------------------------------------------------
 
@@ -799,8 +991,9 @@ def preview_markdown(project_id: str):
             project_dir=proj,
             execution_mode=execution_mode,
         )
-    except RuntimeError:
-        return jsonify({"error": "Sphinx build failed."}), 500
+    except RuntimeError as exc:
+        msg = str(exc).strip()
+        return jsonify({"error": msg or "Sphinx build failed."}), 500
     except Exception as exc:  # pragma: no cover
         return jsonify({"error": f"Sphinx build failed: {exc}"}), 500
 

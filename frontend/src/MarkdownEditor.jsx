@@ -147,6 +147,9 @@ export function MarkdownEditor({ value, onChange, language = 'markdown' }) {
         ...chrome,
       ]
     }
+    if (language === 'plaintext') {
+      return chrome
+    }
     return [markdown(), syntaxHighlighting(markdownDarkHighlight), ...chrome]
   }, [language])
 
