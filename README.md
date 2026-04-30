@@ -1,41 +1,33 @@
-# Notebook -> MyST Converter
+# Notebook-to-Myst
 
-A local web app that converts a Jupyter notebook (`.ipynb`) into MyST Markdown (`.md`) using `jupytext`.
+A local web app for working with Jupyter notebooks as **MyST Markdown** and previewing them like documentation sites.
 
-## Stack
+You can import an `.ipynb` notebook (converted via **jupytext**), edit MyST/Markdown in the browser, tweak Sphinx **`conf.py`** and static assets, and get a **live HTML preview** built with Sphinx (MyST parser, selectable themes such as Sphinx Book and PyData).
 
-- Frontend: React + Vite
-- Backend: Flask + flask-cors
-- Conversion: jupytext
+## Prerequisites
 
-## Project Structure
+- **Python 3** with `pip`
+- **Node.js** and **npm** (for the Vite dev server)
 
-```text
-.
-├── backend/
-│   ├── app.py
-│   └── requirements.txt
-├── frontend/
-│   └── src/
-│       └── App.jsx
-└── README.md
-```
+## Run locally
 
-## Run Locally
+Use **two terminals**: the Flask API on port **5000**, and the React UI on port **5173**. Vite proxies `/api/*` to the backend so you open only the frontend URL in the browser.
 
-### 1) Start backend (port 5000)
+### 1. Backend (Flask)
 
 ```bash
 cd backend
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-flask --app app run --port 5000
+python app.py
 ```
 
-### 2) Start frontend (port 5173)
+The API listens on **http://127.0.0.1:5000**.
 
-In a separate terminal:
+### 2. Frontend (Vite + React)
+
+In another terminal:
 
 ```bash
 cd frontend
@@ -43,13 +35,12 @@ npm install
 npm run dev
 ```
 
-Then open the local URL shown by Vite (typically <http://localhost:5173>).
+Open the URL Vite prints (usually **http://localhost:5173**).
 
-## How It Works
+## Typical workflow
 
-1. Upload one `.ipynb` file in the frontend.
-2. Click **Convert**.
-3. Frontend sends `multipart/form-data` to `POST /api/convert`.
-4. Flask reads the notebook and converts it to MyST markdown.
-5. Converted content appears in a live preview pane.
-6. Click **Download** to save the generated `.md` file.
+1. Use **Import** to load a notebook; it appears as editable MyST/Markdown.
+2. Edit content and workspace settings; use **Preview** to rebuild the Sphinx HTML when needed.
+3. **Download** saves your Markdown when you want a `.md` file on disk.
+
+For a production-style static build of the UI, run `npm run build` in `frontend/` and serve `frontend/dist/` behind a reverse proxy that routes `/api` to the Flask app.
