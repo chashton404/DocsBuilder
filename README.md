@@ -1,4 +1,4 @@
-# Notebook-to-Myst
+# DocsBuilder
 
 A local web app for working with Jupyter notebooks as **MyST Markdown** and previewing them like documentation sites.
 

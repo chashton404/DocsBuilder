@@ -1,5 +1,5 @@
 /**
- * Main UI shell for Notebook-to-Myst.
+ * Main UI shell for DocsBuilder.
  *
  * Layout: header (DocsBuilder + Import / Download) → workspace (sidebar | editor | preview).
  */

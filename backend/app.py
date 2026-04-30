@@ -1,5 +1,5 @@
 """
-Flask backend for Notebook-to-Myst.
+Flask backend for DocsBuilder.
 
 What this module does:
   • Accepts Jupyter notebooks (.ipynb) and MyST/Markdown text from the React app.
