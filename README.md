@@ -25,6 +25,22 @@ python app.py
 
 The API listens on **http://127.0.0.1:5000**.
 
+### Notebook packages (executed code cells)
+
+Preview builds can **execute** MyST/Markdown code cells using **the same Python environment** as the backend—typically `backend/.venv` after you activate it.
+
+Add whatever your notebooks import to **`backend/requirements.txt`**, then reinstall:
+
+```bash
+pip install -r requirements.txt
+```
+
+If you prefer to keep stacks separate, add a second file (for example **`requirements-notebooks.txt`**) in `backend/` and install both:
+
+```bash
+pip install -r requirements.txt -r requirements-notebooks.txt
+```
+
 ### 2. Frontend (Vite + React)
 
 In another terminal:
