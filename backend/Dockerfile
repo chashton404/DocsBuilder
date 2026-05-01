@@ -10,13 +10,16 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app.py extensions.py models.py authz.py entrypoint.sh ./
+COPY migrations ./migrations
 
 ENV DOCSBUILDER_DATA_ROOT=/data \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    FLASK_APP=app
 
-RUN mkdir -p /data
+RUN mkdir -p /data \
+    && chmod +x /app/entrypoint.sh
 
 EXPOSE 5000
 
-CMD ["python", "-u", "-c", "from app import app; app.run(host=\"0.0.0.0\", port=5000, debug=False)"]
+ENTRYPOINT ["./entrypoint.sh"]

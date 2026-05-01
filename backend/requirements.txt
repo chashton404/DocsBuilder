@@ -1,5 +1,9 @@
 flask
 flask-cors
+flask-sqlalchemy
+flask-migrate
+flask-login
+psycopg[binary]>=3.1
 jupytext
 sphinx
 myst-parser

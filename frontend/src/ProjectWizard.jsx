@@ -4,6 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { apiFetch } from './api.js'
 
 export default function ProjectWizard() {
   const { projectId } = useParams()
@@ -19,7 +20,7 @@ export default function ProjectWizard() {
   useEffect(() => {
     let cancelled = false
     async function load() {
-      const mr = await fetch(`/api/projects/${projectId}`)
+      const mr = await apiFetch(`/api/projects/${projectId}`)
       if (!mr.ok) {
         navigate('/projects', { replace: true })
         return
@@ -34,7 +35,7 @@ export default function ProjectWizard() {
         return
       }
       setLoading(false)
-      const tr = await fetch(`${api}/workspace/themes`)
+      const tr = await apiFetch(`${api}/workspace/themes`)
       const tp = await tr.json()
       if (!cancelled && tr.ok) {
         setThemes(Array.isArray(tp.themes) ? tp.themes : [])
@@ -51,7 +52,7 @@ export default function ProjectWizard() {
   async function applyTheme(themeId) {
     setError('')
     try {
-      const r = await fetch(`${api}/workspace/theme`, {
+      const r = await apiFetch(`${api}/workspace/theme`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ theme: themeId }),
@@ -70,13 +71,13 @@ export default function ProjectWizard() {
     setError('')
     try {
       if (!skipThemeWrite && currentTheme) {
-        await fetch(`${api}/workspace/theme`, {
+        await apiFetch(`${api}/workspace/theme`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ theme: currentTheme }),
         })
       }
-      const pr = await fetch(`/api/projects/${projectId}`, {
+      const pr = await apiFetch(`/api/projects/${projectId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ wizard_completed: true }),

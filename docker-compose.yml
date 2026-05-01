@@ -1,4 +1,18 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: docsbuilder
+      POSTGRES_PASSWORD: docsbuilder
+      POSTGRES_DB: docsbuilder
+    volumes:
+      - docsbuilder-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docsbuilder -d docsbuilder"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
   backend:
     build:
       context: ./backend
@@ -7,6 +21,16 @@ services:
       - docsbuilder-data:/data
     ports:
       - "5000:5000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://docsbuilder:docsbuilder@db:5432/docsbuilder
+      DOCSBUILDER_SECRET_KEY: docker-compose-change-this-secret-key
+      DOCSBUILDER_ADMIN_EMAIL: admin@localhost
+      DOCSBUILDER_ADMIN_PASSWORD: chaseisawesome
+      # Overwrites the DB password for DOCSBUILDER_ADMIN_EMAIL on each container start (dev convenience).
+      DOCSBUILDER_ADMIN_SYNC_PASSWORD: "true"
+    depends_on:
+      db:
+        condition: service_healthy
 
   frontend:
     build:
@@ -19,3 +43,4 @@ services:
 
 volumes:
   docsbuilder-data:
+  docsbuilder-pg:

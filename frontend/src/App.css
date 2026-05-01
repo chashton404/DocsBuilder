@@ -1652,3 +1652,63 @@ body {
   flex-wrap: wrap;
   gap: 0.65rem;
 }
+
+/* --- Login --- */
+.login-screen {
+  padding: 1.25rem 1.5rem;
+  max-width: 420px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.login-tabs {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+}
+
+.login-tab {
+  flex: 1;
+  padding: 0.45rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid var(--ol-border);
+  background: rgba(0, 0, 0, 0.15);
+  color: var(--ol-muted);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.login-tab--active {
+  color: var(--ol-text);
+  border-color: rgba(40, 185, 103, 0.45);
+  background: rgba(40, 185, 103, 0.12);
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.login-submit {
+  margin-top: 0.35rem;
+  width: 100%;
+}
+
+.ol-dash-sign-out {
+  margin: 0 0.35rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid var(--ol-border);
+  background: transparent;
+  color: var(--ol-muted);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ol-dash-sign-out:hover {
+  color: var(--ol-text);
+  background: rgba(255, 255, 255, 0.06);
+}

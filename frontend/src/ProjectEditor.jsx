@@ -10,6 +10,7 @@ import {
   useState,
 } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { apiFetch } from './api.js'
 import { MarkdownEditor } from './MarkdownEditor'
 
 function uiStorageKey(projectId) {
@@ -121,7 +122,7 @@ export default function ProjectEditor() {
     let cancelled = false
     async function init() {
       setHydrated(false)
-      const mr = await fetch(`/api/projects/${projectId}`)
+      const mr = await apiFetch(`/api/projects/${projectId}`)
       if (cancelled) {
         return
       }
@@ -134,7 +135,7 @@ export default function ProjectEditor() {
         navigate(`/projects/${projectId}/wizard`, { replace: true })
         return
       }
-      const dr = await fetch(`${api}/documents`)
+      const dr = await apiFetch(`${api}/documents`)
       const dp = await dr.json()
       if (cancelled) {
         return
@@ -171,7 +172,7 @@ export default function ProjectEditor() {
       let mergedDocs = [...docsFromServer]
       if (uiOpen.includes(CONF_PY_DOC_ID)) {
         try {
-          const cr = await fetch(`${api}/workspace/conf`)
+          const cr = await apiFetch(`${api}/workspace/conf`)
           const cp = await cr.json()
           if (cr.ok && typeof cp.content === 'string') {
             mergedDocs = [
@@ -191,7 +192,7 @@ export default function ProjectEditor() {
       }
       if (uiOpen.includes(NOTEBOOK_REQ_DOC_ID)) {
         try {
-          const nr = await fetch(`${api}/notebook-requirements`)
+          const nr = await apiFetch(`${api}/notebook-requirements`)
           const np = await nr.json()
           if (nr.ok && typeof np.content === 'string') {
             mergedDocs = [
@@ -246,7 +247,7 @@ export default function ProjectEditor() {
     }
     const persistable = documents.filter((d) => !isSyntheticWorkspaceDoc(d.id))
     const handle = window.setTimeout(() => {
-      void fetch(`${api}/documents`, {
+      void apiFetch(`${api}/documents`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ documents: persistable }),
@@ -358,7 +359,7 @@ export default function ProjectEditor() {
     if (!confDoc) {
       return
     }
-    const response = await fetch(`${api}/workspace/conf`, {
+    const response = await apiFetch(`${api}/workspace/conf`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: confDoc.content }),
@@ -378,7 +379,7 @@ export default function ProjectEditor() {
     if (!reqDoc) {
       return
     }
-    const response = await fetch(`${api}/notebook-requirements`, {
+    const response = await apiFetch(`${api}/notebook-requirements`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: reqDoc.content }),
@@ -402,7 +403,7 @@ export default function ProjectEditor() {
         }
         confSaveTimerRef.current = setTimeout(() => {
           confSaveTimerRef.current = null
-          void fetch(`${api}/workspace/conf`, {
+          void apiFetch(`${api}/workspace/conf`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: value }),
@@ -421,7 +422,7 @@ export default function ProjectEditor() {
         }
         notebookReqSaveTimerRef.current = setTimeout(() => {
           notebookReqSaveTimerRef.current = null
-          void fetch(`${api}/notebook-requirements`, {
+          void apiFetch(`${api}/notebook-requirements`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: value }),
@@ -475,7 +476,7 @@ export default function ProjectEditor() {
       const confDoc = documentsRef.current.find((d) => d.id === CONF_PY_DOC_ID)
       if (confDoc) {
         queueMicrotask(() => {
-          void fetch(`${api}/workspace/conf`, {
+          void apiFetch(`${api}/workspace/conf`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: confDoc.content }),
@@ -491,7 +492,7 @@ export default function ProjectEditor() {
       const reqDoc = documentsRef.current.find((d) => d.id === NOTEBOOK_REQ_DOC_ID)
       if (reqDoc) {
         queueMicrotask(() => {
-          void fetch(`${api}/notebook-requirements`, {
+          void apiFetch(`${api}/notebook-requirements`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: reqDoc.content }),
@@ -546,7 +547,7 @@ export default function ProjectEditor() {
     setAssetsLoading(true)
     setError('')
     try {
-      const response = await fetch(`${api}/workspace/assets`)
+      const response = await apiFetch(`${api}/workspace/assets`)
       const payload = await response.json()
       if (!response.ok) {
         throw new Error(payload.error || 'Could not load assets.')
@@ -563,7 +564,7 @@ export default function ProjectEditor() {
     setThemesLoading(true)
     setThemeError('')
     try {
-      const response = await fetch(`${api}/workspace/themes`)
+      const response = await apiFetch(`${api}/workspace/themes`)
       const payload = await response.json()
       if (!response.ok) {
         throw new Error(payload.error || 'Could not load themes.')
@@ -588,7 +589,7 @@ export default function ProjectEditor() {
       try {
         await flushPendingNotebookReqSave()
         await flushPendingConfSave()
-        const response = await fetch(`${api}/workspace/theme`, {
+        const response = await apiFetch(`${api}/workspace/theme`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ theme: themeId }),
@@ -621,7 +622,7 @@ export default function ProjectEditor() {
   const openConfPyInEditor = useCallback(async () => {
     setError('')
     try {
-      const response = await fetch(`${api}/workspace/conf`)
+      const response = await apiFetch(`${api}/workspace/conf`)
       const payload = await response.json()
       if (!response.ok) {
         throw new Error(payload.error || 'Could not load conf.py.')
@@ -645,7 +646,7 @@ export default function ProjectEditor() {
   const openNotebookRequirementsInEditor = useCallback(async () => {
     setError('')
     try {
-      const response = await fetch(`${api}/notebook-requirements`)
+      const response = await apiFetch(`${api}/notebook-requirements`)
       const payload = await response.json()
       if (!response.ok) {
         throw new Error(payload.error || 'Could not load notebook requirements.')
@@ -683,7 +684,7 @@ export default function ProjectEditor() {
     const formData = new FormData()
     formData.append('file', file)
     try {
-      const response = await fetch(`${api}/workspace/assets`, {
+      const response = await apiFetch(`${api}/workspace/assets`, {
         method: 'POST',
         body: formData,
       })
@@ -700,7 +701,7 @@ export default function ProjectEditor() {
   const deleteWorkspaceAsset = async (name) => {
     setError('')
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${api}/workspace/assets/${encodeURIComponent(name)}`,
         { method: 'DELETE' },
       )
@@ -794,7 +795,7 @@ export default function ProjectEditor() {
     )
 
     try {
-      const response = await fetch(`${api}/import-notebook`, {
+      const response = await apiFetch(`${api}/import-notebook`, {
         method: 'POST',
         body: formData,
       })
@@ -840,7 +841,7 @@ export default function ProjectEditor() {
     formData.append('file', file)
 
     try {
-      const response = await fetch(`${api}/convert`, {
+      const response = await apiFetch(`${api}/convert`, {
         method: 'POST',
         body: formData,
       })
@@ -993,7 +994,7 @@ export default function ProjectEditor() {
 
     try {
       if (executionMode === 'force') {
-        const syncResponse = await fetch(`${api}/notebook-env/sync`, {
+        const syncResponse = await apiFetch(`${api}/notebook-env/sync`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ execution_mode: 'force' }),
@@ -1007,7 +1008,7 @@ export default function ProjectEditor() {
         setPreviewPhase('sphinx')
       }
 
-      const response = await fetch(`${api}/preview`, {
+      const response = await apiFetch(`${api}/preview`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

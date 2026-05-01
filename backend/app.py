@@ -3,10 +3,12 @@ Flask backend for DocsBuilder.
 
 What this module does:
   • Stores multiple projects under ``DOCSBUILDER_DATA_ROOT/projects/<uuid>/`` (``conf.py``, ``_static``, ``documents.json``, ``meta.json``).
+  • Persists accounts and project ACLs in PostgreSQL or SQLite (see ``DATABASE_URL``); filesystem folders remain the document store.
   • Accepts Jupyter notebooks (.ipynb) and MyST/Markdown text from the React app.
   • Builds Sphinx HTML previews in ephemeral temp dirs and serves them under /api/sphinx-preview/...
 
 Run with: python app.py  → listens on port 5000 (see bottom of file).
+Apply DB migrations once per environment: ``FLASK_APP=app flask db upgrade``.
 """
 
 import hashlib
@@ -27,23 +29,21 @@ import uuid
 
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
+from flask_login import current_user, login_required, login_user, logout_user
 import jupytext
 from sphinx.cmd.build import build_main
+from sqlalchemy import inspect
 import yaml
+
+from authz import ROLE_RANK, accessible_project_ids_for, effective_project_role
+from extensions import db, login_manager, migrate
+from models import ProjectRecord, User
 
 # -----------------------------------------------------------------------------
 # App setup & in-memory Sphinx build cache
 # -----------------------------------------------------------------------------
-# Flask serves REST endpoints. CORS lets the Vite dev server (different origin)
-# call /api/* during development.
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
-CORS(app, resources={r"/api/*": {"origins": "*"}})
-
-# Each successful Sphinx build gets a UUID; we map id → temp folder containing
-# source + build output. Old entries are deleted when we exceed MAX_SPHINX_PREVIEWS.
-SPHINX_PREVIEWS: dict[str, Path] = {}
-MAX_SPHINX_PREVIEWS = 10
 
 # Persistent project data: ``DOCSBUILDER_DATA_ROOT`` (default: ``backend/data``).
 _DATA_ROOT_RAW = os.environ.get("DOCSBUILDER_DATA_ROOT")
@@ -52,7 +52,59 @@ if _DATA_ROOT_RAW:
 else:
     DATA_ROOT = (Path(__file__).resolve().parent / "data").resolve()
 
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+
 PROJECTS_ROOT = DATA_ROOT / "projects"
+
+_sqlite_default_path = (DATA_ROOT / "docsbuilder.db").resolve().as_posix()
+_default_database_url = f"sqlite:///{_sqlite_default_path}"
+app.config["SECRET_KEY"] = os.environ.get(
+    "DOCSBUILDER_SECRET_KEY",
+    "dev-insecure-docsbuilder-secret-change-me",
+)
+app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
+    "DATABASE_URL",
+    _default_database_url,
+)
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get(
+    "SESSION_COOKIE_SECURE",
+    "",
+).strip().lower() in {"1", "true", "yes"}
+
+db.init_app(app)
+migrate.init_app(app, db)
+login_manager.init_app(app)
+
+_cors_raw = os.environ.get("DOCSBUILDER_CORS_ORIGINS")
+if _cors_raw:
+    _cors_origins = [x.strip() for x in _cors_raw.split(",") if x.strip()]
+else:
+    _cors_origins = ["http://127.0.0.1:5173", "http://localhost:5173"]
+
+CORS(
+    app,
+    resources={r"/api/*": {"origins": _cors_origins, "supports_credentials": True}},
+)
+
+
+@login_manager.user_loader
+def _load_user(user_id: str):
+    return db.session.get(User, user_id)
+
+
+@login_manager.unauthorized_handler
+def _handle_api_unauthorized():
+    return jsonify({"error": "Authentication required."}), 401
+
+
+login_manager.session_protection = "strong"
+
+# Each successful Sphinx build: preview_id → (temp_dir, creator user id).
+SPHINX_PREVIEWS: dict[str, tuple[Path, str]] = {}
+MAX_SPHINX_PREVIEWS = 10
 
 # Per-project notebook execution: pip requirements + venv (see README).
 NOTEBOOK_REQUIREMENTS_BASENAME = "requirements-notebook.txt"
@@ -218,7 +270,7 @@ def _prune_old_previews() -> None:
     # from disk so temp space does not grow forever.
     while len(SPHINX_PREVIEWS) > MAX_SPHINX_PREVIEWS:
         oldest_id = next(iter(SPHINX_PREVIEWS))
-        preview_dir = SPHINX_PREVIEWS.pop(oldest_id)
+        preview_dir = SPHINX_PREVIEWS.pop(oldest_id)[0]
         shutil.rmtree(preview_dir, ignore_errors=True)
 
 
@@ -355,12 +407,25 @@ def _project_path(uid: uuid.UUID) -> Path:
     return PROJECTS_ROOT / str(uid)
 
 
-def _project_dir_or_abort(project_id: str) -> Path:
+def _resolve_existing_project_dir(project_id: str) -> Path | None:
     uid = _parse_uuid(project_id)
     if uid is None:
-        abort(404)
+        return None
     path = _project_path(uid)
     if not path.is_dir():
+        return None
+    return path
+
+
+def _project_disk_if_allowed(project_id: str, *, min_role: str = "viewer") -> Path:
+    role = effective_project_role(project_id, current_user.id)
+    if role is None:
+        abort(404)
+    need = ROLE_RANK.get(min_role, 0)
+    if ROLE_RANK.get(role, 0) < need:
+        abort(403)
+    path = _resolve_existing_project_dir(project_id)
+    if path is None:
         abort(404)
     return path
 
@@ -535,14 +600,39 @@ def _list_project_metas() -> list[dict]:
     return out
 
 
-def _name_taken(name: str, exclude_project_id: str | None = None) -> bool:
-    for meta in _list_project_metas():
-        if meta.get("name") == name:
-            pid = meta.get("id")
-            if exclude_project_id is not None and pid == exclude_project_id:
-                continue
+def _name_taken_for_owner(
+    name: str,
+    owner_user_id: str,
+    *,
+    exclude_project_id: str | None = None,
+) -> bool:
+    """Project titles are unique per owning account (disk ``meta.json`` names)."""
+    rows = ProjectRecord.query.filter_by(owner_user_id=owner_user_id).all()
+    for row in rows:
+        if exclude_project_id is not None and row.id == exclude_project_id:
+            continue
+        try:
+            uid = uuid.UUID(row.id)
+        except ValueError:
+            continue
+        meta_fp = _project_path(uid) / "meta.json"
+        if not meta_fp.is_file():
+            continue
+        try:
+            meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(meta, dict) and meta.get("name") == name:
             return True
     return False
+
+
+def _owner_email(project_id: str) -> str | None:
+    rec = db.session.get(ProjectRecord, project_id)
+    if rec is None:
+        return None
+    owner = db.session.get(User, rec.owner_user_id)
+    return owner.email if owner else None
 
 
 def _create_project_on_disk(name: str) -> uuid.UUID:
@@ -603,6 +693,7 @@ def render_sphinx_preview(
     markdown_content: str,
     *,
     project_dir: Path,
+    created_by_user_id: str,
     execution_mode: str = "off",
 ) -> tuple[str, str]:
     """Writes conf.py + index.md, runs sphinx-build, registers preview dir.
@@ -675,9 +766,163 @@ def render_sphinx_preview(
 
     index_html = (build_dir / "index.html").read_text(encoding="utf-8")
     preview_id = uuid.uuid4().hex
-    SPHINX_PREVIEWS[preview_id] = temp_dir
+    SPHINX_PREVIEWS[preview_id] = (temp_dir, created_by_user_id)
     _prune_old_previews()
     return preview_id, index_html
+
+
+# -----------------------------------------------------------------------------
+# Database bootstrap (first request) & auth API
+# -----------------------------------------------------------------------------
+
+_db_initialized = False
+
+
+def _ensure_admin_user_and_claim_projects() -> None:
+    inspector = inspect(db.engine)
+    if not inspector.has_table("users"):
+        db.create_all()
+
+    admin_email = (os.environ.get("DOCSBUILDER_ADMIN_EMAIL") or "").strip().lower()
+    admin_password = (os.environ.get("DOCSBUILDER_ADMIN_PASSWORD") or "").strip()
+    sync_admin_pw = os.environ.get(
+        "DOCSBUILDER_ADMIN_SYNC_PASSWORD",
+        "",
+    ).strip().lower() in {"1", "true", "yes"}
+
+    if admin_email and len(admin_password) >= 8:
+        u = User.query.filter_by(email=admin_email).first()
+        if u is None:
+            if User.query.count() == 0 or sync_admin_pw:
+                u = User(email=admin_email)
+                u.set_password(admin_password)
+                db.session.add(u)
+                db.session.commit()
+        elif sync_admin_pw:
+            u.set_password(admin_password)
+            db.session.commit()
+    elif User.query.count() == 0:
+        app.logger.warning(
+            "DocsBuilder has no users. Set DOCSBUILDER_ADMIN_EMAIL and "
+            "DOCSBUILDER_ADMIN_PASSWORD (min 8 chars), or set "
+            "DOCSBUILDER_ALLOW_REGISTRATION=true.",
+        )
+        return
+
+    claim_user = None
+    if admin_email:
+        claim_user = User.query.filter_by(email=admin_email).first()
+    if claim_user is None:
+        claim_user = User.query.order_by(User.created_at.asc()).first()
+    if claim_user is None:
+        return
+
+    _ensure_projects_root()
+    claimed_any = False
+    for child in PROJECTS_ROOT.iterdir():
+        if not child.is_dir():
+            continue
+        meta_fp = child / "meta.json"
+        if not meta_fp.is_file():
+            continue
+        try:
+            meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        pid = meta.get("id") if isinstance(meta, dict) else None
+        if not isinstance(pid, str) or pid != child.name:
+            continue
+        if db.session.get(ProjectRecord, pid) is None:
+            db.session.add(ProjectRecord(id=pid, owner_user_id=claim_user.id))
+            claimed_any = True
+    if claimed_any:
+        db.session.commit()
+
+
+@app.before_request
+def _docsbuilder_db_bootstrap_once():
+    global _db_initialized
+    if _db_initialized:
+        return
+    _db_initialized = True
+    _ensure_admin_user_and_claim_projects()
+
+
+def _allow_self_registration() -> bool:
+    return os.environ.get("DOCSBUILDER_ALLOW_REGISTRATION", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _normalize_email(email: object) -> str | None:
+    if not isinstance(email, str):
+        return None
+    normalized = email.strip().lower()
+    if len(normalized) > 254 or normalized.count("@") != 1:
+        return None
+    local, _, domain = normalized.partition("@")
+    if not local or not domain:
+        return None
+    # Allow bare ``localhost`` (Docker / dev defaults like admin@localhost).
+    if "." not in domain and domain != "localhost":
+        return None
+    return normalized
+
+
+@app.post("/api/auth/register")
+def api_auth_register():
+    if not _allow_self_registration():
+        return jsonify({"error": "Registration is disabled."}), 403
+    payload = request.get_json(silent=True) or {}
+    email = _normalize_email(payload.get("email"))
+    password = payload.get("password")
+    if email is None:
+        return jsonify({"error": "A valid email is required."}), 400
+    if not isinstance(password, str) or len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters."}), 400
+    if User.query.filter_by(email=email).first() is not None:
+        return jsonify({"error": "An account with this email already exists."}), 409
+    user = User(email=email)
+    user.set_password(password)
+    db.session.add(user)
+    db.session.commit()
+    login_user(user, remember=False)
+    return jsonify({"user": {"id": user.id, "email": user.email}}), 201
+
+
+@app.post("/api/auth/login")
+def api_auth_login():
+    payload = request.get_json(silent=True) or {}
+    email = _normalize_email(payload.get("email"))
+    password = payload.get("password")
+    if email is None or not isinstance(password, str):
+        return jsonify({"error": "Email and password are required."}), 400
+    user = User.query.filter_by(email=email).first()
+    if user is None or not user.check_password(password):
+        return jsonify({"error": "Invalid email or password."}), 401
+    login_user(user, remember=False)
+    return jsonify({"user": {"id": user.id, "email": user.email}})
+
+
+@app.post("/api/auth/logout")
+@login_required
+def api_auth_logout():
+    logout_user()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/auth/me")
+def api_auth_me():
+    if not current_user.is_authenticated:
+        return jsonify({"user": None})
+    return jsonify({"user": {"id": current_user.id, "email": current_user.email}})
+
+
+@app.get("/api/auth/status")
+def api_auth_status():
+    return jsonify({"registration_allowed": _allow_self_registration()})
 
 
 # -----------------------------------------------------------------------------
@@ -687,9 +932,13 @@ def render_sphinx_preview(
 
 @app.get("/api/sphinx-preview/<preview_id>/")
 @app.get("/api/sphinx-preview/<preview_id>/<path:asset_path>")
+@login_required
 def serve_sphinx_preview(preview_id: str, asset_path: str = "index.html"):
-    preview_root = SPHINX_PREVIEWS.get(preview_id)
-    if preview_root is None:
+    entry = SPHINX_PREVIEWS.get(preview_id)
+    if entry is None:
+        abort(404)
+    preview_root, creator_id = entry
+    if creator_id != current_user.id:
         abort(404)
 
     build_dir = preview_root / "build"
@@ -709,34 +958,48 @@ def serve_sphinx_preview(preview_id: str, asset_path: str = "index.html"):
 
 
 @app.get("/api/projects")
+@login_required
 def api_projects_list():
-    metas = _list_project_metas()
-    return jsonify(
-        {
-            "projects": [
-                {
-                    "id": m["id"],
-                    "name": m["name"],
-                    "created_at": m.get("created_at"),
-                    "updated_at": m.get("updated_at") or m.get("created_at"),
-                    "wizard_completed": bool(m.get("wizard_completed", False)),
-                }
-                for m in metas
-            ]
-        },
+    allowed = accessible_project_ids_for(current_user.id)
+    rows: list[dict[str, object]] = []
+    for m in _list_project_metas():
+        pid = m.get("id")
+        if not isinstance(pid, str) or pid not in allowed:
+            continue
+        role = effective_project_role(pid, current_user.id)
+        rows.append(
+            {
+                "id": pid,
+                "name": m.get("name"),
+                "created_at": m.get("created_at"),
+                "updated_at": m.get("updated_at") or m.get("created_at"),
+                "wizard_completed": bool(m.get("wizard_completed", False)),
+                "role": role,
+                "owner_email": _owner_email(pid),
+            },
+        )
+    rows.sort(
+        key=lambda row: (
+            str(row["name"] or "").lower(),
+            str(row["id"] or ""),
+        ),
     )
+    return jsonify({"projects": rows})
 
 
 @app.post("/api/projects")
+@login_required
 def api_projects_create():
     payload = request.get_json(silent=True) or {}
     name = payload.get("name")
     if not isinstance(name, str) or not name.strip():
         return jsonify({"error": 'Field "name" is required.'}), 400
     name_stripped = name.strip()
-    if _name_taken(name_stripped):
+    if _name_taken_for_owner(name_stripped, current_user.id):
         return jsonify({"error": "A project with this name already exists."}), 409
     uid = _create_project_on_disk(name_stripped)
+    db.session.add(ProjectRecord(id=str(uid), owner_user_id=current_user.id))
+    db.session.commit()
     return jsonify(
         {
             "id": str(uid),
@@ -747,16 +1010,18 @@ def api_projects_create():
 
 
 @app.get("/api/projects/<project_id>")
+@login_required
 def api_project_get(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id)
     meta_fp = proj / "meta.json"
     meta = json.loads(meta_fp.read_text(encoding="utf-8"))
     return jsonify(meta)
 
 
 @app.patch("/api/projects/<project_id>")
+@login_required
 def api_project_patch(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id, min_role="editor")
     payload = request.get_json(silent=True) or {}
     meta_fp = proj / "meta.json"
     meta = json.loads(meta_fp.read_text(encoding="utf-8"))
@@ -771,16 +1036,17 @@ def api_project_patch(project_id: str):
 
 
 @app.post("/api/projects/<project_id>/duplicate")
+@login_required
 def api_project_duplicate(project_id: str):
     """Clone project directory with a new id and ``Copy of …`` name."""
-    src = _project_dir_or_abort(project_id)
+    src = _project_disk_if_allowed(project_id, min_role="editor")
     src_meta = json.loads((src / "meta.json").read_text(encoding="utf-8"))
     if not isinstance(src_meta, dict):
         return jsonify({"error": "Invalid source project metadata."}), 500
     base_name = src_meta.get("name") if isinstance(src_meta.get("name"), str) else "Untitled"
     candidate = f"Copy of {base_name}"
     suffix_i = 1
-    while _name_taken(candidate):
+    while _name_taken_for_owner(candidate, current_user.id):
         candidate = f"Copy of {base_name} ({suffix_i})"
         suffix_i += 1
 
@@ -799,6 +1065,9 @@ def api_project_duplicate(project_id: str):
     meta["wizard_completed"] = bool(meta.get("wizard_completed", False))
     (dest / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
+    db.session.add(ProjectRecord(id=str(new_uid), owner_user_id=current_user.id))
+    db.session.commit()
+
     return jsonify(
         {
             "id": str(new_uid),
@@ -811,9 +1080,10 @@ def api_project_duplicate(project_id: str):
 
 
 @app.get("/api/projects/<project_id>/download")
+@login_required
 def api_project_download(project_id: str):
     """ZIP entire project folder for backup."""
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id)
     meta_fp = proj / "meta.json"
     meta = json.loads(meta_fp.read_text(encoding="utf-8"))
     raw_name = meta.get("name") if isinstance(meta.get("name"), str) else "project"
@@ -836,15 +1106,21 @@ def api_project_download(project_id: str):
 
 
 @app.delete("/api/projects/<project_id>")
+@login_required
 def api_project_delete(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id, min_role="owner")
     shutil.rmtree(proj)
+    rec = db.session.get(ProjectRecord, project_id)
+    if rec is not None:
+        db.session.delete(rec)
+        db.session.commit()
     return jsonify({"ok": True})
 
 
 @app.get("/api/projects/<project_id>/documents")
+@login_required
 def api_project_documents_get(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id)
     dp = _documents_file(proj)
     if not dp.exists():
         dp.write_text(json.dumps({"documents": []}, indent=2), encoding="utf-8")
@@ -856,8 +1132,9 @@ def api_project_documents_get(project_id: str):
 
 
 @app.put("/api/projects/<project_id>/documents")
+@login_required
 def api_project_documents_put(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id, min_role="editor")
     payload = request.get_json(silent=True) or {}
     docs = payload.get("documents")
     if docs is None or not isinstance(docs, list):
@@ -885,9 +1162,10 @@ def api_project_documents_put(project_id: str):
 
 
 @app.post("/api/projects/<project_id>/import-notebook")
+@login_required
 def import_notebook(project_id: str):
     """Parse .ipynb and return concatenated Markdown cells for the editor."""
-    _project_dir_or_abort(project_id)
+    _project_disk_if_allowed(project_id, min_role="editor")
     file = request.files.get("file")
     if file is None:
         return jsonify({"error": "No file uploaded."}), 400
@@ -923,9 +1201,10 @@ def import_notebook(project_id: str):
 
 
 @app.post("/api/projects/<project_id>/notebook-env/sync")
+@login_required
 def notebook_env_sync(project_id: str):
     """Ensure notebook venv matches ``requirements-notebook.txt`` (pip when needed)."""
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id, min_role="editor")
     payload = request.get_json(silent=True) or {}
     raw = payload.get("execution_mode")
     execution_mode = (
@@ -943,15 +1222,17 @@ def notebook_env_sync(project_id: str):
 
 
 @app.get("/api/projects/<project_id>/notebook-requirements")
+@login_required
 def notebook_requirements_get(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id)
     path = _ensure_notebook_requirements_file(proj)
     return jsonify({"content": path.read_text(encoding="utf-8")})
 
 
 @app.put("/api/projects/<project_id>/notebook-requirements")
+@login_required
 def notebook_requirements_put(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id, min_role="editor")
     payload = request.get_json(silent=True) or {}
     content = payload.get("content")
     if content is None or not isinstance(content, str):
@@ -970,9 +1251,10 @@ def notebook_requirements_put(project_id: str):
 
 
 @app.post("/api/projects/<project_id>/preview")
+@login_required
 def preview_markdown(project_id: str):
     """Build Sphinx HTML from arbitrary Markdown (manual recompile)."""
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id, min_role="editor")
     payload = request.get_json(silent=True) or {}
     markdown_content = payload.get("markdown")
     if markdown_content is None or not isinstance(markdown_content, str):
@@ -989,6 +1271,7 @@ def preview_markdown(project_id: str):
         preview_id, _sphinx_html = render_sphinx_preview(
             markdown_content,
             project_dir=proj,
+            created_by_user_id=current_user.id,
             execution_mode=execution_mode,
         )
     except RuntimeError as exc:
@@ -1012,8 +1295,9 @@ def preview_markdown(project_id: str):
 
 
 @app.post("/api/projects/<project_id>/convert")
+@login_required
 def convert_notebook(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id, min_role="editor")
     file = request.files.get("file")
     if file is None:
         return jsonify({"error": "No file uploaded."}), 400
@@ -1042,6 +1326,7 @@ def convert_notebook(project_id: str):
             preview_id, sphinx_html = render_sphinx_preview(
                 content,
                 project_dir=proj,
+                created_by_user_id=current_user.id,
                 execution_mode=exec_mode,
             )
         except Exception as exc:  # pragma: no cover
@@ -1064,14 +1349,16 @@ def convert_notebook(project_id: str):
 
 
 @app.get("/api/projects/<project_id>/workspace/conf")
+@login_required
 def workspace_conf_get(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id)
     return jsonify({"content": _read_workspace_conf(proj)})
 
 
 @app.put("/api/projects/<project_id>/workspace/conf")
+@login_required
 def workspace_conf_put(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id, min_role="editor")
     payload = request.get_json(silent=True) or {}
     content = payload.get("content")
     if content is None or not isinstance(content, str):
@@ -1084,8 +1371,9 @@ def workspace_conf_put(project_id: str):
 
 
 @app.get("/api/projects/<project_id>/workspace/themes")
+@login_required
 def workspace_themes_get(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id)
     text = _read_workspace_conf(proj)
     current = _parse_html_theme_from_conf(text)
     themes = [{"id": tid, "label": label} for tid, label in ALLOWED_HTML_THEMES]
@@ -1093,8 +1381,9 @@ def workspace_themes_get(project_id: str):
 
 
 @app.put("/api/projects/<project_id>/workspace/theme")
+@login_required
 def workspace_theme_put(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id, min_role="editor")
     payload = request.get_json(silent=True) or {}
     theme = payload.get("theme")
     if not isinstance(theme, str) or theme not in ALLOWED_HTML_THEME_IDS:
@@ -1112,8 +1401,9 @@ def workspace_theme_put(project_id: str):
 
 
 @app.get("/api/projects/<project_id>/workspace/assets")
+@login_required
 def workspace_assets_list(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id)
     static_dir = _workspace_static_dir(proj)
     static_dir.mkdir(parents=True, exist_ok=True)
     files: list[dict[str, str | int]] = []
@@ -1124,8 +1414,9 @@ def workspace_assets_list(project_id: str):
 
 
 @app.post("/api/projects/<project_id>/workspace/assets")
+@login_required
 def workspace_assets_upload(project_id: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id, min_role="editor")
     static_dir = _workspace_static_dir(proj)
     file = request.files.get("file")
     if file is None or not getattr(file, "filename", None):
@@ -1141,8 +1432,9 @@ def workspace_assets_upload(project_id: str):
 
 
 @app.get("/api/projects/<project_id>/workspace/assets/<path:name>")
+@login_required
 def workspace_assets_get(project_id: str, name: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id)
     static_dir = _workspace_static_dir(proj)
     safe = _safe_asset_filename(name)
     if safe is None:
@@ -1154,8 +1446,9 @@ def workspace_assets_get(project_id: str, name: str):
 
 
 @app.delete("/api/projects/<project_id>/workspace/assets/<path:name>")
+@login_required
 def workspace_assets_delete(project_id: str, name: str):
-    proj = _project_dir_or_abort(project_id)
+    proj = _project_disk_if_allowed(project_id, min_role="editor")
     static_dir = _workspace_static_dir(proj)
     safe = _safe_asset_filename(name)
     if safe is None:

@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { apiFetch } from './api.js'
 
 function relativeTime(iso) {
   if (!iso) {
@@ -93,7 +94,7 @@ function IconSearch() {
 }
 
 async function fetchProjectsFromApi() {
-  const r = await fetch('/api/projects')
+  const r = await apiFetch('/api/projects')
   const d = await r.json()
   if (!r.ok) {
     throw new Error(d.error || 'Failed to load projects.')
@@ -101,7 +102,7 @@ async function fetchProjectsFromApi() {
   return Array.isArray(d.projects) ? d.projects : []
 }
 
-export default function ProjectsPage() {
+export default function ProjectsPage({ user, onLogout }) {
   const navigate = useNavigate()
   const [projects, setProjects] = useState([])
   const [loading, setLoading] = useState(true)
@@ -158,6 +159,9 @@ export default function ProjectsPage() {
   const visibleProjects = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
     let rows = projects
+    if (sidebarNav === 'yours') {
+      rows = rows.filter((p) => p.role === 'owner')
+    }
     if (q) {
       rows = rows.filter((p) => p.name.toLowerCase().includes(q))
     }
@@ -168,7 +172,7 @@ export default function ProjectsPage() {
       return sortTitleAsc ? cmp : -cmp
     })
     return rows
-  }, [projects, searchQuery, sortTitleAsc])
+  }, [projects, searchQuery, sidebarNav, sortTitleAsc])
 
   const allFilteredSelected =
     visibleProjects.length > 0
@@ -220,7 +224,7 @@ export default function ProjectsPage() {
     setCreating(true)
     setError('')
     try {
-      const r = await fetch('/api/projects', {
+      const r = await apiFetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newName.trim() }),
@@ -257,7 +261,7 @@ export default function ProjectsPage() {
       return
     }
     try {
-      const r = await fetch(`/api/projects/${id}`, { method: 'DELETE' })
+      const r = await apiFetch(`/api/projects/${id}`, { method: 'DELETE' })
       if (!r.ok) {
         const d = await r.json()
         throw new Error(d.error || 'Delete failed.')
@@ -283,7 +287,7 @@ export default function ProjectsPage() {
     }
     try {
       for (const id of ids) {
-        const r = await fetch(`/api/projects/${id}`, { method: 'DELETE' })
+        const r = await apiFetch(`/api/projects/${id}`, { method: 'DELETE' })
         if (!r.ok) {
           const d = await r.json()
           throw new Error(d.error || `Delete failed for ${id}.`)
@@ -302,7 +306,7 @@ export default function ProjectsPage() {
     ev.stopPropagation()
     setError('')
     try {
-      const r = await fetch(`/api/projects/${id}/duplicate`, {
+      const r = await apiFetch(`/api/projects/${id}/duplicate`, {
         method: 'POST',
       })
       const raw = await r.text()
@@ -382,6 +386,16 @@ export default function ProjectsPage() {
             + New tag
           </button>
         </div>
+        <button
+          type="button"
+          className="ol-dash-sign-out"
+          onClick={() => void onLogout()}
+        >
+          Sign out
+          {user?.email ? (
+            <span className="visually-hidden">{` (${user.email})`}</span>
+          ) : null}
+        </button>
         <div className="ol-dash-sidebar-spacer" />
       </aside>
 
@@ -506,10 +520,14 @@ export default function ProjectsPage() {
                         <span className="ol-dash-badge">Setup</span>
                       ) : null}
                     </td>
-                    <td className="ol-dash-td-owner">You</td>
+                    <td className="ol-dash-td-owner">
+                      {p.owner_email === user?.email
+                        ? 'You'
+                        : (p.owner_email ?? '—')}
+                    </td>
                     <td className="ol-dash-td-modified">
                       {relativeTime(p.updated_at)}{' '}
-                      <span className="ol-dash-by">by You</span>
+                      <span className="ol-dash-by">{p.role ?? '—'}</span>
                     </td>
                     <td className="ol-dash-td-actions">
                       <div className="ol-dash-actions">
@@ -584,8 +602,8 @@ export default function ProjectsPage() {
           <form className="projects-modal ol-dash-modal" onSubmit={handleCreate}>
             <h2 id="projects-modal-title">New project</h2>
             <p className="projects-modal-hint">
-              Names are unique (case-sensitive): <code>Foo</code> and{' '}
-              <code>foo</code> can both exist.
+              Titles are unique per account (case-sensitive): <code>Foo</code>{' '}
+              and <code>foo</code> can both exist for you.
             </p>
             <label className="projects-label">
               Title
