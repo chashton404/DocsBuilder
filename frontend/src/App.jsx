@@ -2,6 +2,7 @@
  * Top-level routes: login → projects list → wizard → editor.
  */
 
+/* React and React Router packages */
 import { useEffect, useState } from 'react'
 import {
   BrowserRouter,
@@ -11,6 +12,8 @@ import {
   useLocation,
   useNavigate,
 } from 'react-router-dom'
+
+/* Imports from other parts of the app */
 import { apiFetch } from './api.js'
 import LoginPage from './LoginPage.jsx'
 import ProjectEditor from './ProjectEditor.jsx'

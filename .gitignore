@@ -4,3 +4,5 @@ __pycache__/
 backend/data/
 frontend/dist/
 node_modules/
+
+QUESTIONS.md
